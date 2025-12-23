@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import WalletButton from "../../walletButton";
@@ -51,9 +53,6 @@ function prettyRewardTitle(reward) {
   return reward.type || "Reward";
 }
 
-/**
- * SFX helper (same as play page)
- */
 function useSfx() {
   const [muted, setMuted] = useState(false);
   const aud = useRef({ click: null, open: null, reveal: null, win: null });
@@ -108,7 +107,7 @@ export default function RevealPage({ params }) {
   const [reward, setReward] = useState(null);
   const [err, setErr] = useState("");
 
-  const [fx, setFx] = useState("loading"); // loading | revealed
+  const [fx, setFx] = useState("loading");
   const [pulse, setPulse] = useState(false);
 
   const { muted, toggle, play } = useSfx();
@@ -141,7 +140,6 @@ export default function RevealPage({ params }) {
           setFx("revealed");
           setPulse(true);
 
-          // tiny beat for drama
           await sleep(180);
           await play("reveal");
 
@@ -208,23 +206,15 @@ export default function RevealPage({ params }) {
 
       <div style={{ height: 14 }} />
 
-      {/* Reveal card */}
       <div
         className="card"
         style={{
           position: "relative",
           overflow: "hidden",
-          border:
-            fx === "revealed" && isLegendary
-              ? "1px solid rgba(251,191,36,.28)"
-              : undefined,
-          boxShadow:
-            fx === "revealed" && isLegendary
-              ? "0 22px 80px rgba(251,191,36,.10)"
-              : undefined,
+          border: fx === "revealed" && isLegendary ? "1px solid rgba(251,191,36,.28)" : undefined,
+          boxShadow: fx === "revealed" && isLegendary ? "0 22px 80px rgba(251,191,36,.10)" : undefined,
         }}
       >
-        {/* legendary aura */}
         {fx === "revealed" && isLegendary ? (
           <div
             aria-hidden
@@ -258,13 +248,7 @@ export default function RevealPage({ params }) {
 
         <div className="hr" />
 
-        <div
-          style={{
-            display: "grid",
-            gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-            gap: 14,
-          }}
-        >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 14 }}>
           <div className="cardGlass">
             <div className="mutedSmall">Status</div>
             <div style={{ marginTop: 10 }}>
@@ -285,14 +269,7 @@ export default function RevealPage({ params }) {
             }}
           >
             <div className="mutedSmall">Reward</div>
-            <div
-              style={{
-                fontWeight: 950,
-                fontSize: 22,
-                marginTop: 10,
-                letterSpacing: "-.2px",
-              }}
-            >
+            <div style={{ fontWeight: 950, fontSize: 22, marginTop: 10, letterSpacing: "-.2px" }}>
               {loading ? "—" : rewardTitle}
             </div>
 
@@ -313,9 +290,7 @@ export default function RevealPage({ params }) {
           <div className="cardGlass">
             <div className="mutedSmall">Next</div>
             <div className="muted" style={{ marginTop: 10 }}>
-              {isLegendary
-                ? "Legendary pull. Screenshot it."
-                : "Feeling lucky? Run it back."}
+              {isLegendary ? "Legendary pull. Screenshot it." : "Feeling lucky? Run it back."}
             </div>
 
             <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
