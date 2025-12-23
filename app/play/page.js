@@ -1,5 +1,7 @@
 "use client";
 
+export const dynamic = "force-dynamic";
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import WalletButton from "../walletButton";
@@ -75,7 +77,6 @@ function useSfx() {
     aud.current.reveal = new Audio("/sfx/reveal.mp3");
     aud.current.win = new Audio("/sfx/win.mp3"); // optional
 
-    // tasteful volumes
     if (aud.current.click) aud.current.click.volume = 0.35;
     if (aud.current.open) aud.current.open.volume = 0.45;
     if (aud.current.reveal) aud.current.reveal.volume = 0.6;
@@ -100,7 +101,7 @@ function useSfx() {
       a.currentTime = 0;
       await a.play();
     } catch {
-      // mobile/autoplay restrictions can block; ignore
+      // autoplay restrictions can block; ignore
     }
   }
 
@@ -258,7 +259,6 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
 
-  // micro-animations
   const [stateFx, setStateFx] = useState("idle"); // idle | hover | opening | success
   const vibe = tierVibe(t.id);
 
@@ -273,7 +273,6 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
 
       await play("click");
 
-      // 1) Create open server-side
       setOk("Preparing…");
       const created = await fetchJsonSafe("/api/open/create", {
         method: "POST",
@@ -292,7 +291,6 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
       const treasury = new PublicKey(treasuryStr);
       const fromPubkey = new PublicKey(wallet);
 
-      // 2) Build transaction: transfer + memo
       const tx = new Transaction().add(
         SystemProgram.transfer({
           fromPubkey,
@@ -301,24 +299,18 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
         })
       );
 
+      // Memo (nice for Phantom dapp verification context)
       const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
       const memoText = `TossBox: open ${t.name} (${t.id}) | openId:${openId}`;
       const memoData = new TextEncoder().encode(memoText);
+      tx.add({ programId: MEMO_PROGRAM_ID, keys: [], data: memoData });
 
-      tx.add({
-        programId: MEMO_PROGRAM_ID,
-        keys: [],
-        data: memoData,
-      });
-
-      // Optional: prefill fee payer / blockhash for smoother wallet UX
       try {
         const { blockhash } = await connection.getLatestBlockhash("confirmed");
         tx.recentBlockhash = blockhash;
         tx.feePayer = fromPubkey;
       } catch {}
 
-      // 3) UX: a brief beat before wallet pops
       await play("open");
       await sleep(250);
 
@@ -338,7 +330,6 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
       await play("reveal");
       setStateFx("success");
 
-      // 4) Redirect
       window.location.href = `/reveal/${encodeURIComponent(openId)}`;
     } catch (e) {
       setErr(e?.message || "Something went wrong.");
@@ -352,16 +343,15 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
   const priceSol = formatSol(t.price_sol);
 
   const shimmer =
-    t.id === "alpha" ? "linear-gradient(90deg, transparent, rgba(34,197,94,.18), transparent)" :
-    t.id === "starter" ? "linear-gradient(90deg, transparent, rgba(124,92,255,.18), transparent)" :
-    "linear-gradient(90deg, transparent, rgba(251,191,36,.18), transparent)";
+    t.id === "alpha"
+      ? "linear-gradient(90deg, transparent, rgba(34,197,94,.18), transparent)"
+      : t.id === "starter"
+      ? "linear-gradient(90deg, transparent, rgba(124,92,255,.18), transparent)"
+      : "linear-gradient(90deg, transparent, rgba(251,191,36,.18), transparent)";
 
   const openingStyle =
     stateFx === "opening"
-      ? {
-          transform: "translateY(-2px) rotate(-0.4deg)",
-          boxShadow: "0 18px 70px rgba(124,92,255,.22)",
-        }
+      ? { transform: "translateY(-2px) rotate(-0.4deg)", boxShadow: "0 18px 70px rgba(124,92,255,.22)" }
       : undefined;
 
   return (
@@ -369,13 +359,8 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
       className="tier"
       onMouseEnter={() => setStateFx((s) => (s === "opening" ? s : "hover"))}
       onMouseLeave={() => setStateFx((s) => (s === "opening" ? s : "idle"))}
-      style={{
-        ...openingStyle,
-        position: "relative",
-        overflow: "hidden",
-      }}
+      style={{ ...openingStyle, position: "relative", overflow: "hidden" }}
     >
-      {/* shimmer sweep */}
       <div
         aria-hidden
         style={{
@@ -403,9 +388,7 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
       <div className="tierMeta">
         <span className="badge">💰 {priceSol} SOL</span>
         <span className="badge">⚡ Instant reveal</span>
-        <span className={`badge ${t.active ? "green" : "danger"}`}>
-          {t.active ? "Live" : "Paused"}
-        </span>
+        <span className={`badge ${t.active ? "green" : "danger"}`}>{t.active ? "Live" : "Paused"}</span>
       </div>
 
       <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -419,12 +402,7 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
           )}
         </button>
 
-        <button
-          className="btn"
-          disabled={busy}
-          onClick={() => (window.location.href = "/")}
-          title="Back"
-        >
+        <button className="btn" disabled={busy} onClick={() => (window.location.href = "/")} title="Back">
           Home
         </button>
       </div>
