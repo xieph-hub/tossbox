@@ -1,110 +1,177 @@
 "use client";
 
 import Link from "next/link";
-import { useSearchParams } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import WalletButton from "../../walletButton";
+
+function safeParseJson(text) {
+  if (!text) return {};
+  try {
+    return JSON.parse(text);
+  } catch {
+    return {};
+  }
+}
+
+async function fetchJsonSafe(url, options) {
+  const res = await fetch(url, options);
+  const text = await res.text();
+  const data = safeParseJson(text);
+
+  if (!res.ok) {
+    const msg =
+      data?.error ||
+      data?.message ||
+      (text && text.slice(0, 180)) ||
+      `Request failed (${res.status})`;
+    throw new Error(msg);
+  }
+
+  return data;
+}
+
+function rarityBadge(r) {
+  const v = (r || "").toLowerCase();
+  if (v === "legendary") return "warn";
+  if (v === "rare") return "brand";
+  return "green";
+}
 
 export default function RevealPage({ params }) {
   const { openId } = params;
-  const sp = useSearchParams();
-  const amountLamports = sp.get("amount");
-  const treasury = sp.get("to");
 
-  const [sig, setSig] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [open, setOpen] = useState(null);
+  const [reward, setReward] = useState(null);
   const [err, setErr] = useState("");
 
-  async function confirm() {
-    setErr("");
-    setBusy(true);
-    try {
-      const res = await fetch("/api/open/confirm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ openId, txSignature: sig })
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Confirm failed");
-      setResult(data);
-      // tiny sound
-      try { new Audio("/reveal.mp3").play(); } catch {}
-    } catch (e) {
-      setErr(e.message || "Error");
-    } finally {
-      setBusy(false);
+  useEffect(() => {
+    let cancelled = false;
+    let timer = null;
+
+    async function load() {
+      try {
+        setErr("");
+        const data = await fetchJsonSafe(`/api/reveal/${encodeURIComponent(openId)}`, {
+          method: "GET",
+        });
+
+        if (cancelled) return;
+
+        setOpen(data.open || null);
+        setReward(data.reward || null);
+
+        const isRevealed = data.open?.status === "REVEALED" && data.reward;
+        setLoading(!isRevealed);
+
+        if (!isRevealed) {
+          timer = setTimeout(load, 1200);
+        }
+      } catch (e) {
+        if (!cancelled) setErr(e?.message || "Failed to load reveal.");
+        setLoading(false);
+      }
     }
-  }
+
+    load();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [openId]);
 
   return (
     <>
       <div className="nav">
-        <Link className="brand" href="/">tossbox.fun</Link>
+        <div className="brand">
+          <span className="logoDot" />
+          <div>
+            <Link href="/">tossbox.fun</Link>
+            <div className="subbrand">Reveal</div>
+          </div>
+        </div>
         <WalletButton />
       </div>
 
+      <div className="hero">
+        <div className="hTag">🎁 Opening result</div>
+        <div className="big" style={{ fontSize: 34 }}>
+          {loading ? "Revealing…" : "You pulled something."}
+        </div>
+        <div className="muted">
+          {loading
+            ? "We’re verifying on-chain and finalizing your reward. This usually takes a second."
+            : "Screenshot it. Share it. Or open another."}
+        </div>
+
+        {loading ? (
+          <div style={{ marginTop: 14 }} className="muted">
+            <span className="spin" style={{ marginRight: 10, display: "inline-block" }} />
+            Processing…
+          </div>
+        ) : null}
+
+        {err ? <div className="toast">{err}</div> : null}
+      </div>
+
+      <div style={{ height: 14 }} />
+
       <div className="card">
-        <h2 style={{ marginTop: 0 }}>Reveal</h2>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+          <div style={{ fontWeight: 950, fontSize: 18 }}>Details</div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+            <Link className="btn" href="/play">Open another</Link>
+            <Link className="btn ghost" href="/">Home</Link>
+          </div>
+        </div>
 
-        {!result ? (
-          <>
-            <p className="muted">
-              Step 1: Send <b>{amountLamports}</b> lamports to treasury:
-            </p>
-            <div className="card" style={{ wordBreak: "break-all" }}>
-              {treasury}
+        <div className="hr" />
+
+        <div className="grid">
+          <div className="cardGlass">
+            <div className="mutedSmall">Open ID</div>
+            <div style={{ fontWeight: 900, wordBreak: "break-all" }}>{openId}</div>
+            <div style={{ marginTop: 10 }}>
+              <span className={`badge ${open?.status === "REVEALED" ? "green" : "warn"}`}>
+                Status: {open?.status || "UNKNOWN"}
+              </span>
             </div>
+          </div>
 
-            <p className="muted">
-              Step 2: After you send, paste the transaction signature below and confirm.
-            </p>
+          <div className="cardGlass">
+            <div className="mutedSmall">Reward</div>
+            {reward ? (
+              <>
+                <div style={{ fontWeight: 950, fontSize: 18, marginTop: 6 }}>
+                  {reward.type === "TOKEN" && reward.symbol === "SOL"
+                    ? `SOL`
+                    : reward.type}
+                </div>
+                <div className="mutedSmall" style={{ marginTop: 6 }}>
+                  {reward.type === "TOKEN" && reward.amount ? `Amount: ${reward.amount} SOL` : ""}
+                </div>
+                <div style={{ marginTop: 10 }}>
+                  <span className={`badge ${rarityBadge(reward.rarity)}`}>
+                    Rarity: {reward.rarity || "unknown"}
+                  </span>
+                </div>
+              </>
+            ) : (
+              <div className="muted">No reward yet…</div>
+            )}
+          </div>
 
-            <input
-              value={sig}
-              onChange={(e) => setSig(e.target.value)}
-              placeholder="Paste Solana tx signature..."
-              style={{
-                width: "100%",
-                padding: 12,
-                borderRadius: 12,
-                border: "1px solid rgba(255,255,255,.12)",
-                background: "rgba(255,255,255,.06)",
-                color: "white"
-              }}
-            />
-
-            <div style={{ marginTop: 12, display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <button className="btn primary" disabled={busy || !sig} onClick={confirm}>
-                {busy ? "Confirming..." : "Confirm & Reveal"}
-              </button>
-              <Link className="btn" href="/play">Back</Link>
+          <div className="cardGlass">
+            <div className="mutedSmall">Next</div>
+            <div className="muted" style={{ marginTop: 6 }}>
+              If you won SOL, it will be paid automatically from the payout wallet.
             </div>
-
-            {err ? <p className="muted" style={{ color: "#ffb3b3" }}>{err}</p> : null}
-          </>
-        ) : (
-          <>
-            <div className="pill">RARITY: {result.rarity}</div>
-            <div className="big" style={{ fontSize: 28, marginTop: 10 }}>
-              {result.title}
+            <div style={{ marginTop: 12 }}>
+              <Link className="btn primary" href="/play">Open again</Link>
             </div>
-            <p className="muted">{result.aiLine}</p>
-
-            <div className="card">
-              <b>Reward:</b> {result.rewardType}
-              {result.symbol ? ` • ${result.symbol}` : ""}
-              {result.amount ? ` • ${result.amount}` : ""}
-            </div>
-
-            <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Link className="btn primary" href="/play">Open another</Link>
-              <a className="btn" href={`https://twitter.com/intent/tweet?text=${encodeURIComponent(result.shareText)}`} target="_blank">
-                Share on X
-              </a>
-            </div>
-          </>
-        )}
+          </div>
+        </div>
       </div>
     </>
   );
