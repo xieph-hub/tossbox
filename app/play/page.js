@@ -31,8 +31,16 @@ async function fetchJsonSafe(url, options) {
     err.data = data;
     throw err;
   }
-
   return data;
+}
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+function formatSol(sol) {
+  const n = Number(sol) || 0;
+  return n.toFixed(3);
 }
 
 function tierAccent(tierId) {
@@ -41,27 +49,18 @@ function tierAccent(tierId) {
   return "warn";
 }
 
-function formatSol(sol) {
-  const n = Number(sol) || 0;
-  return n.toFixed(3);
-}
-
-function sleep(ms) {
-  return new Promise((r) => setTimeout(r, ms));
+function tierVibe(tierId) {
+  if (tierId === "starter") return { emoji: "🟣", label: "Low stakes, fast fun" };
+  if (tierId === "alpha") return { emoji: "🟢", label: "Better odds, bigger pulls" };
+  return { emoji: "🟡", label: "High risk, high drama" };
 }
 
 /**
- * Small SFX helper
- * - Works best on user gesture (click) — which we have.
- * - Stores mute preference in localStorage.
+ * SFX helper (persists mute preference)
  */
 function useSfx() {
   const [muted, setMuted] = useState(false);
-  const aud = useRef({
-    click: null,
-    open: null,
-    reveal: null,
-  });
+  const aud = useRef({ click: null, open: null, reveal: null, win: null });
 
   useEffect(() => {
     try {
@@ -71,15 +70,16 @@ function useSfx() {
   }, []);
 
   useEffect(() => {
-    // lazy init audio objects (client-only)
     aud.current.click = new Audio("/sfx/click.mp3");
     aud.current.open = new Audio("/sfx/open.mp3");
     aud.current.reveal = new Audio("/sfx/reveal.mp3");
+    aud.current.win = new Audio("/sfx/win.mp3"); // optional
 
-    // keep volumes tasteful
-    aud.current.click.volume = 0.35;
-    aud.current.open.volume = 0.45;
-    aud.current.reveal.volume = 0.6;
+    // tasteful volumes
+    if (aud.current.click) aud.current.click.volume = 0.35;
+    if (aud.current.open) aud.current.open.volume = 0.45;
+    if (aud.current.reveal) aud.current.reveal.volume = 0.6;
+    if (aud.current.win) aud.current.win.volume = 0.75;
   }, []);
 
   function toggle() {
@@ -96,12 +96,11 @@ function useSfx() {
     if (muted) return;
     const a = aud.current?.[name];
     if (!a) return;
-
     try {
       a.currentTime = 0;
       await a.play();
     } catch {
-      // mobile can block audio sometimes; ignore silently
+      // mobile/autoplay restrictions can block; ignore
     }
   }
 
@@ -151,7 +150,7 @@ export default function PlayPage() {
           <span className="logoDot" />
           <div>
             <Link href="/">tossbox.fun</Link>
-            <div className="subbrand">Lootboxes for degens • Mainnet</div>
+            <div className="subbrand">Pick a box. Approve. Reveal.</div>
           </div>
         </div>
 
@@ -167,43 +166,32 @@ export default function PlayPage() {
         <div className="heroTop">
           <div>
             <div className="hTag">⚡ One-click open • Wallet signs • Instant reveal</div>
-            <div className="big">Pick a box. Approve. Reveal.</div>
+            <div className="big">Choose your chaos.</div>
             <div className="muted">
-              You click Open → Phantom asks for approval → we confirm on-chain → you get the reveal.
-              No manual transfers.
+              Tap <b>Open</b> → approve in wallet → we confirm on-chain → you get the reveal.
+              Clean flow, clear states, no manual transfers.
+            </div>
+
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginTop: 16 }}>
+              <Link className="btn ghost" href="/">
+                ← Home
+              </Link>
+              <span className={`badge ${connected ? "green" : "danger"}`}>
+                {connected ? "Wallet ready" : "Connect wallet"}
+              </span>
+              <span className="badge brand">Memo enabled</span>
             </div>
           </div>
 
-          <div className="cardGlass" style={{ minWidth: 300 }}>
+          <div className="cardGlass" style={{ minWidth: 320 }}>
             <div className="kpiTop">
-              <div className="kpiLabel">Status</div>
-              <span className={`badge ${connected ? "green" : "danger"}`}>
-                {connected ? "Wallet Connected" : "Connect Wallet"}
-              </span>
+              <div className="kpiLabel">How it works</div>
+              <span className="badge">3 steps</span>
             </div>
             <div className="hr" />
-            <div className="mutedSmall">
-              You will always see a wallet approval popup before any payment is sent.
-            </div>
-            <div style={{ marginTop: 10 }}>
-              <span className="badge brand">Memo enabled</span>{" "}
-              <span className="mutedSmall">(helps Phantom show context)</span>
-            </div>
-          </div>
-        </div>
-
-        <div className="kpiRow">
-          <div className="kpi">
-            <div className="kpiLabel">Flow</div>
-            <div className="kpiValue">Open → Approve → Confirm → Reveal</div>
-          </div>
-          <div className="kpi">
-            <div className="kpiLabel">Network</div>
-            <div className="kpiValue">Solana Mainnet</div>
-          </div>
-          <div className="kpi">
-            <div className="kpiLabel">Experience</div>
-            <div className="kpiValue">One click</div>
+            <Step n="1" title="Pick a tier" desc="Starter, Alpha, Deity — choose your risk." />
+            <Step n="2" title="Approve in wallet" desc="You’ll see the amount before you sign." />
+            <Step n="3" title="Instant reveal" desc="We verify payment on-chain, then reveal." />
           </div>
         </div>
 
@@ -213,21 +201,13 @@ export default function PlayPage() {
       <div style={{ height: 14 }} />
 
       <div className="card">
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "space-between",
-            gap: 12,
-            flexWrap: "wrap",
-            alignItems: "center",
-          }}
-        >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
             <div style={{ fontWeight: 950, fontSize: 18 }}>Choose a box</div>
-            <div className="mutedSmall">Tap Open and approve in Phantom/Solflare.</div>
+            <div className="mutedSmall">Hover cards. Feel the glow. Tap Open when ready.</div>
           </div>
-          <Link className="btn ghost" href="/">
-            ← Home
+          <Link className="btn primary" href="/">
+            Back
           </Link>
         </div>
 
@@ -257,25 +237,44 @@ export default function PlayPage() {
   );
 }
 
+function Step({ n, title, desc }) {
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: 10 }}>
+      <span className="badge brand" style={{ minWidth: 34, justifyContent: "center" }}>
+        {n}
+      </span>
+      <div>
+        <div style={{ fontWeight: 900 }}>{title}</div>
+        <div className="mutedSmall" style={{ marginTop: 2 }}>
+          {desc}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [ok, setOk] = useState("");
-  const [anim, setAnim] = useState(""); // "shake" | "glow"
+
+  // micro-animations
+  const [stateFx, setStateFx] = useState("idle"); // idle | hover | opening | success
+  const vibe = tierVibe(t.id);
 
   async function oneClickOpen() {
     setErr("");
     setOk("");
     setBusy(true);
+    setStateFx("opening");
 
     try {
       if (!wallet) throw new Error("Connect your wallet first.");
 
       await play("click");
-      setAnim("glow");
-      await sleep(120);
 
-      // 1) Create open server-side (locks tier + returns treasury + amount)
+      // 1) Create open server-side
+      setOk("Preparing…");
       const created = await fetchJsonSafe("/api/open/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -293,7 +292,7 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
       const treasury = new PublicKey(treasuryStr);
       const fromPubkey = new PublicKey(wallet);
 
-      // 2) Build tx: SOL transfer + MEMO (Phantom context)
+      // 2) Build transaction: transfer + memo
       const tx = new Transaction().add(
         SystemProgram.transfer({
           fromPubkey,
@@ -302,7 +301,6 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
         })
       );
 
-      // Memo Program (standard)
       const MEMO_PROGRAM_ID = new PublicKey("MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr");
       const memoText = `TossBox: open ${t.name} (${t.id}) | openId:${openId}`;
       const memoData = new TextEncoder().encode(memoText);
@@ -313,30 +311,24 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
         data: memoData,
       });
 
-      // OPTIONAL: set latest blockhash for smoother wallet UX
+      // Optional: prefill fee payer / blockhash for smoother wallet UX
       try {
-        const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
+        const { blockhash } = await connection.getLatestBlockhash("confirmed");
         tx.recentBlockhash = blockhash;
         tx.feePayer = fromPubkey;
-      } catch {
-        // wallet adapter can handle this; ignore if RPC hiccups
-      }
+      } catch {}
 
-      // 3) UX: show "Preparing..." briefly BEFORE wallet popup
-      setOk("Preparing transaction…");
-      setAnim("shake");
+      // 3) UX: a brief beat before wallet pops
       await play("open");
-      await sleep(350);
+      await sleep(250);
 
-      // 4) Ask wallet to sign/send (Phantom approval)
-      setOk("Approve in your wallet…");
+      setOk("Approve in wallet…");
       const signature = await sendTransaction(tx, connection);
 
       setOk("Confirming on-chain…");
       await connection.confirmTransaction(signature, "confirmed");
 
-      // 5) Confirm server-side (verifies payment + assigns reward + triggers payout if SOL)
-      setOk("Finalizing reveal…");
+      setOk("Revealing…");
       await fetchJsonSafe("/api/open/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -344,42 +336,76 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
       });
 
       await play("reveal");
+      setStateFx("success");
 
-      // 6) Go to reveal page
+      // 4) Redirect
       window.location.href = `/reveal/${encodeURIComponent(openId)}`;
     } catch (e) {
       setErr(e?.message || "Something went wrong.");
+      setStateFx("idle");
     } finally {
       setBusy(false);
-      setTimeout(() => setAnim(""), 420);
+      setTimeout(() => setOk(""), 1200);
     }
   }
 
   const priceSol = formatSol(t.price_sol);
 
+  const shimmer =
+    t.id === "alpha" ? "linear-gradient(90deg, transparent, rgba(34,197,94,.18), transparent)" :
+    t.id === "starter" ? "linear-gradient(90deg, transparent, rgba(124,92,255,.18), transparent)" :
+    "linear-gradient(90deg, transparent, rgba(251,191,36,.18), transparent)";
+
+  const openingStyle =
+    stateFx === "opening"
+      ? {
+          transform: "translateY(-2px) rotate(-0.4deg)",
+          boxShadow: "0 18px 70px rgba(124,92,255,.22)",
+        }
+      : undefined;
+
   return (
     <div
       className="tier"
+      onMouseEnter={() => setStateFx((s) => (s === "opening" ? s : "hover"))}
+      onMouseLeave={() => setStateFx((s) => (s === "opening" ? s : "idle"))}
       style={{
-        transform:
-          anim === "shake"
-            ? "translateY(-2px) rotate(-0.3deg)"
-            : undefined,
-        boxShadow:
-          anim === "glow"
-            ? "0 18px 70px rgba(124,92,255,.28)"
-            : undefined,
+        ...openingStyle,
+        position: "relative",
+        overflow: "hidden",
       }}
     >
+      {/* shimmer sweep */}
+      <div
+        aria-hidden
+        style={{
+          position: "absolute",
+          inset: 0,
+          transform: stateFx === "hover" ? "translateX(0)" : "translateX(-55%)",
+          transition: "transform 600ms ease",
+          background: shimmer,
+          opacity: stateFx === "hover" ? 1 : 0,
+          pointerEvents: "none",
+        }}
+      />
+
       <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-        <div className="tierName">{t.name}</div>
+        <div className="tierName">
+          {vibe.emoji} {t.name}
+        </div>
         <span className={`badge ${tierAccent(t.id)}`}>Tier</span>
+      </div>
+
+      <div className="mutedSmall" style={{ marginTop: 6 }}>
+        {vibe.label}
       </div>
 
       <div className="tierMeta">
         <span className="badge">💰 {priceSol} SOL</span>
         <span className="badge">⚡ Instant reveal</span>
-        <span className={`badge ${t.active ? "green" : "danger"}`}>{t.active ? "Live" : "Paused"}</span>
+        <span className={`badge ${t.active ? "green" : "danger"}`}>
+          {t.active ? "Live" : "Paused"}
+        </span>
       </div>
 
       <div style={{ marginTop: 14, display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -396,7 +422,7 @@ function TierCard({ t, disabled, wallet, connection, sendTransaction, play }) {
         <button
           className="btn"
           disabled={busy}
-          onClick={() => window.location.href = "/"}
+          onClick={() => (window.location.href = "/")}
           title="Back"
         >
           Home
