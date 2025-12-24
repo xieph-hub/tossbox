@@ -7,7 +7,7 @@ export type PythPx = {
   conf?: number | null;
   publishTime: number; // unix seconds
   feedId: string;
-  symbol: string;      // the feed symbol string from Hermes (e.g. "Crypto.BTC/USD")
+  symbol: string; // e.g. "Crypto.BTC/USD"
   source: "pyth";
 };
 
@@ -22,15 +22,13 @@ function normalizeSymbol(input: string) {
 }
 
 function looksLikeUsdPair(feedSymbolUpper: string, base: string) {
-  // Common Hermes symbols:
-  // "Crypto.BTC/USD", "BTC/USD", "Crypto.BTC / USD", etc.
   const s = feedSymbolUpper.replace(/\s+/g, "");
   return s.includes(`${base}/USD`) || s.endsWith(`${base}/USD`);
 }
 
 /**
- * Resolve a Pyth feed id for a symbol.
- * We prefer USD pairs for settlement.
+ * Resolve a Pyth feed id for a symbol (prefer USD pairs).
+ * Hermes v2 typing expects an options object: { query, assetType, fetchOptions }.
  */
 async function resolveFeedId(symbolRaw: string): Promise<{ feedId: string; feedSymbol: string }> {
   const base = normalizeSymbol(symbolRaw);
@@ -38,14 +36,17 @@ async function resolveFeedId(symbolRaw: string): Promise<{ feedId: string; feedS
   const cached = FEED_ID_CACHE.get(base);
   if (cached) return cached;
 
-  // hermes-client v2 uses getPriceFeeds(query)
-  const feeds = await client.getPriceFeeds(base);
+  // ✅ FIX: options object (matches the TS error you saw)
+  const feeds = await client.getPriceFeeds({
+    query: base,
+    assetType: "crypto",
+  });
 
   if (!feeds || feeds.length === 0) {
     throw new Error(`No Pyth feeds found for symbol query: ${base}`);
   }
 
-  // Prefer an exact USD pair
+  // Prefer an exact USD pair if present
   const preferred = feeds.find((f: any) => {
     const sym = (f?.attributes?.symbol || "").toString().toUpperCase();
     return looksLikeUsdPair(sym, base);
@@ -63,7 +64,7 @@ async function resolveFeedId(symbolRaw: string): Promise<{ feedId: string; feedS
 }
 
 function normalizePythPrice(priceObj: any): { price: number; conf?: number | null; publishTime: number } {
-  // Parsed Hermes price objects: price, conf, expo, publish_time
+  // Hermes “parsed” price objects typically include: price, conf, expo, publish_time
   const price = Number(priceObj?.price);
   const conf = priceObj?.conf != null ? Number(priceObj.conf) : null;
   const expo = Number(priceObj?.expo);
@@ -85,7 +86,7 @@ export async function getPythUsdPrice(symbolRaw: string): Promise<PythPx> {
   const base = normalizeSymbol(symbolRaw);
   const { feedId, feedSymbol } = await resolveFeedId(base);
 
-  // hermes-client v2: getLatestPriceUpdates([feedId], { parsed: true })
+  // Hermes latest update (parsed)
   const latest = await client.getLatestPriceUpdates([feedId], { parsed: true });
 
   const parsed = latest?.parsed?.[0];
