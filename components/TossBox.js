@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
@@ -8,23 +8,23 @@ import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, Trophy, Users, DollarSign, Flame } from 'lucide-react';
 import Link from 'next/link';
 
-// Crypto options - EXPANDED LIST
+// Crypto options
 const CRYPTOS = [
-  { symbol: 'BTC', name: 'Bitcoin', id: 'bitcoin' },
-  { symbol: 'ETH', name: 'Ethereum', id: 'ethereum' },
-  { symbol: 'SOL', name: 'Solana', id: 'solana' },
-  { symbol: 'BNB', name: 'BNB', id: 'binancecoin' },
-  { symbol: 'XRP', name: 'Ripple', id: 'ripple' },
-  { symbol: 'ADA', name: 'Cardano', id: 'cardano' },
-  { symbol: 'DOGE', name: 'Dogecoin', id: 'dogecoin' },
-  { symbol: 'MATIC', name: 'Polygon', id: 'matic-network' },
-  { symbol: 'DOT', name: 'Polkadot', id: 'polkadot' },
-  { symbol: 'AVAX', name: 'Avalanche', id: 'avalanche-2' },
-  { symbol: 'SHIB', name: 'Shiba Inu', id: 'shiba-inu' },
-  { symbol: 'LINK', name: 'Chainlink', id: 'chainlink' },
-  { symbol: 'UNI', name: 'Uniswap', id: 'uniswap' },
-  { symbol: 'LTC', name: 'Litecoin', id: 'litecoin' },
-  { symbol: 'PEPE', name: 'Pepe', id: 'pepe' }
+  { symbol: 'BTC', name: 'Bitcoin', binanceSymbol: 'BTCUSDT' },
+  { symbol: 'ETH', name: 'Ethereum', binanceSymbol: 'ETHUSDT' },
+  { symbol: 'SOL', name: 'Solana', binanceSymbol: 'SOLUSDT' },
+  { symbol: 'BNB', name: 'BNB', binanceSymbol: 'BNBUSDT' },
+  { symbol: 'XRP', name: 'Ripple', binanceSymbol: 'XRPUSDT' },
+  { symbol: 'ADA', name: 'Cardano', binanceSymbol: 'ADAUSDT' },
+  { symbol: 'DOGE', name: 'Dogecoin', binanceSymbol: 'DOGEUSDT' },
+  { symbol: 'MATIC', name: 'Polygon', binanceSymbol: 'MATICUSDT' },
+  { symbol: 'DOT', name: 'Polkadot', binanceSymbol: 'DOTUSDT' },
+  { symbol: 'AVAX', name: 'Avalanche', binanceSymbol: 'AVAXUSDT' },
+  { symbol: 'SHIB', name: 'Shiba Inu', binanceSymbol: 'SHIBUSDT' },
+  { symbol: 'LINK', name: 'Chainlink', binanceSymbol: 'LINKUSDT' },
+  { symbol: 'UNI', name: 'Uniswap', binanceSymbol: 'UNIUSDT' },
+  { symbol: 'LTC', name: 'Litecoin', binanceSymbol: 'LTCUSDT' },
+  { symbol: 'TRX', name: 'Tron', binanceSymbol: 'TRXUSDT' }
 ];
 
 const TossBox = () => {
@@ -36,11 +36,14 @@ const TossBox = () => {
   const [prediction, setPrediction] = useState(null);
   const [multiplier, setMultiplier] = useState(1);
   const [stake, setStake] = useState(0.1);
-  const [gameState, setGameState] = useState('waiting'); // waiting, active, ended
+  const [gameState, setGameState] = useState('waiting');
   const [countdown, setCountdown] = useState(60);
-  const [priceData, setPriceData] = useState([]);
   const [startPrice, setStartPrice] = useState(null);
-  const [currentPrice, setCurrentPrice] = useState(0);
+  
+  // ALL PRICES stored in one object - instant switching!
+  const [allPrices, setAllPrices] = useState({});
+  const [priceHistory, setPriceHistory] = useState({});
+  const websockets = useRef({});
   
   // Stats
   const [totalPot, setTotalPot] = useState(0);
@@ -48,92 +51,84 @@ const TossBox = () => {
   const [balance, setBalance] = useState(0);
   const [userStreak, setUserStreak] = useState(0);
   const [recentWinners, setRecentWinners] = useState([]);
-  
-  // Loading states
   const [placingBet, setPlacingBet] = useState(false);
-  const [priceLoading, setPriceLoading] = useState(true);
 
-  // Ultra-fast price feed - Production ready with WebSocket + REST fallback
+  // Get current price instantly from cache
+  const currentPrice = allPrices[selectedCrypto] || 0;
+  const priceData = priceHistory[selectedCrypto] || [];
+
+  // MASTER PRICE FEED - Connects to ALL cryptos at once via single WebSocket
   useEffect(() => {
-    const crypto = CRYPTOS.find(c => c.symbol === selectedCrypto);
-    if (!crypto) return;
-
-    let ws;
-    let isActive = true;
-    let restFallback;
-    let hasReceivedPrice = false;
-
-    setPriceLoading(true);
-
-    // Get initial price immediately via REST (CoinGecko)
-    const fetchInitialPrice = async () => {
+    console.log('🚀 Initializing MASTER price feed for all assets...');
+    
+    // Step 1: Fetch ALL prices at once via REST
+    const fetchAllPricesInitial = async () => {
       try {
+        const symbols = CRYPTOS.map(c => c.binanceSymbol).join(',');
         const response = await fetch(
-          `https://api.coingecko.com/api/v3/simple/price?ids=${crypto.id}&vs_currencies=usd`,
-          { cache: 'no-store' }
+          `https://api.binance.com/api/v3/ticker/price`
         );
         const data = await response.json();
-        const price = data[crypto.id]?.usd;
         
-        if (price && isActive) {
-          setCurrentPrice(price);
-          setPriceData([{ time: Date.now(), price }]);
-          setPriceLoading(false);
-          hasReceivedPrice = true;
-          console.log(`💰 Initial price loaded: $${price}`);
-        }
+        const prices = {};
+        const histories = {};
+        
+        CRYPTOS.forEach(crypto => {
+          const priceData = data.find(d => d.symbol === crypto.binanceSymbol);
+          if (priceData) {
+            const price = parseFloat(priceData.price);
+            prices[crypto.symbol] = price;
+            histories[crypto.symbol] = [{ time: Date.now(), price }];
+          }
+        });
+        
+        console.log('✅ ALL prices loaded:', prices);
+        setAllPrices(prices);
+        setPriceHistory(histories);
       } catch (error) {
-        console.error('Initial price fetch error:', error);
-        // Try Binance as fallback
-        tryBinanceInitial();
+        console.error('Failed to fetch initial prices:', error);
       }
     };
 
-    const tryBinanceInitial = async () => {
-      try {
-        const symbol = crypto.symbol.toUpperCase();
-        const response = await fetch(
-          `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`
-        );
-        const data = await response.json();
-        const price = parseFloat(data.price);
-        
-        if (price && isActive) {
-          setCurrentPrice(price);
-          setPriceData([{ time: Date.now(), price }]);
-          setPriceLoading(false);
-          hasReceivedPrice = true;
-        }
-      } catch (error) {
-        console.error('Binance initial fetch failed:', error);
-        setPriceLoading(false);
-      }
-    };
-
-    // WebSocket connection for real-time updates (fastest)
-    const connectWebSocket = () => {
-      const symbol = crypto.symbol.toLowerCase();
-      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}usdt@aggTrade`);
+    // Step 2: Connect to Binance Combined Stream (ALL tickers at once!)
+    const connectMasterWebSocket = () => {
+      // Create stream list for all cryptos
+      const streams = CRYPTOS.map(c => `${c.binanceSymbol.toLowerCase()}@ticker`).join('/');
+      const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
+      
+      console.log('🔌 Connecting to MASTER WebSocket...');
+      const ws = new WebSocket(wsUrl);
       
       ws.onopen = () => {
-        console.log(`🟢 Live feed connected: ${crypto.symbol}`);
+        console.log('✅ MASTER WebSocket connected - streaming ALL prices!');
       };
       
       ws.onmessage = (event) => {
-        if (!isActive) return;
         try {
-          const data = JSON.parse(event.data);
-          const price = parseFloat(data.p);
-          
-          if (price) {
-            setCurrentPrice(price);
-            setPriceData(prev => {
-              const newData = [...prev, { time: Date.now(), price }];
-              return newData.slice(-30);
-            });
-            if (!hasReceivedPrice) {
-              setPriceLoading(false);
-              hasReceivedPrice = true;
+          const message = JSON.parse(event.data);
+          if (message.data) {
+            const tickerData = message.data;
+            const symbol = tickerData.s; // e.g., "BTCUSDT"
+            const price = parseFloat(tickerData.c); // current price
+            
+            // Find our crypto
+            const crypto = CRYPTOS.find(c => c.binanceSymbol === symbol);
+            if (crypto && price && !isNaN(price)) {
+              // Update price instantly
+              setAllPrices(prev => ({
+                ...prev,
+                [crypto.symbol]: price
+              }));
+              
+              // Update history
+              setPriceHistory(prev => {
+                const history = prev[crypto.symbol] || [];
+                const newHistory = [...history, { time: Date.now(), price }].slice(-30);
+                return {
+                  ...prev,
+                  [crypto.symbol]: newHistory
+                };
+              });
             }
           }
         } catch (error) {
@@ -142,65 +137,28 @@ const TossBox = () => {
       };
       
       ws.onerror = (error) => {
-        console.log('WebSocket error, using REST fallback');
-        startRESTFallback();
+        console.error('Master WebSocket error:', error);
       };
       
       ws.onclose = () => {
-        if (isActive) {
-          console.log('WebSocket closed, reconnecting...');
-          setTimeout(connectWebSocket, 2000);
-        }
+        console.log('Master WebSocket closed, reconnecting in 3s...');
+        setTimeout(connectMasterWebSocket, 3000);
       };
+      
+      websockets.current.master = ws;
     };
 
-    // REST API fallback (if WebSocket fails)
-    const startRESTFallback = () => {
-      const fetchPrice = async () => {
-        if (!isActive) return;
-        try {
-          const response = await fetch(
-            `https://api.coingecko.com/api/v3/simple/price?ids=${crypto.id}&vs_currencies=usd`,
-            { cache: 'no-store' }
-          );
-          const data = await response.json();
-          const price = data[crypto.id]?.usd;
-          
-          if (price) {
-            setCurrentPrice(price);
-            setPriceData(prev => {
-              const newData = [...prev, { time: Date.now(), price }];
-              return newData.slice(-30);
-            });
-            if (!hasReceivedPrice) {
-              setPriceLoading(false);
-              hasReceivedPrice = true;
-            }
-          }
-        } catch (error) {
-          console.error('REST fallback error:', error);
-        }
-      };
+    // Execute
+    fetchAllPricesInitial();
+    setTimeout(connectMasterWebSocket, 1000);
 
-      fetchPrice();
-      restFallback = setInterval(fetchPrice, 3000);
-    };
-
-    // Execute: Fetch initial price, then connect WebSocket
-    fetchInitialPrice();
-    
-    setTimeout(() => {
-      if (isActive) connectWebSocket();
-    }, 500);
-
+    // Cleanup
     return () => {
-      isActive = false;
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        ws.close();
+      if (websockets.current.master) {
+        websockets.current.master.close();
       }
-      if (restFallback) clearInterval(restFallback);
     };
-  }, [selectedCrypto]);
+  }, []);
 
   // Fetch game state periodically
   useEffect(() => {
@@ -280,10 +238,7 @@ const TossBox = () => {
       );
 
       const signature = await sendTransaction(transaction, connection);
-      console.log('Transaction sent:', signature);
-      
       await connection.confirmTransaction(signature, 'confirmed');
-      console.log('Transaction confirmed:', signature);
 
       const response = await fetch('/api/place-bet', {
         method: 'POST',
@@ -305,9 +260,7 @@ const TossBox = () => {
         setStartPrice(currentPrice);
         setCountdown(60);
         setBalance(prev => prev - stake);
-        
         await fetchGameState();
-        
         alert('Bet placed successfully! Good luck! 🎲');
       } else {
         alert('Failed to place bet: ' + (result.error || 'Unknown error'));
@@ -315,7 +268,7 @@ const TossBox = () => {
       
     } catch (error) {
       console.error('Bet placement error:', error);
-      alert('Failed to place bet. Please try again. Error: ' + error.message);
+      alert('Failed to place bet: ' + error.message);
     } finally {
       setPlacingBet(false);
     }
@@ -323,7 +276,6 @@ const TossBox = () => {
 
   const endRound = () => {
     setGameState('ended');
-    
     setTimeout(() => {
       setGameState('waiting');
       setPrediction(null);
@@ -347,6 +299,13 @@ const TossBox = () => {
       {value}x
     </button>
   );
+
+  const formatPrice = (price) => {
+    if (!price || price === 0) return '0.00';
+    if (price < 0.01) return price.toFixed(6);
+    if (price < 1) return price.toFixed(4);
+    return price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 text-white p-4">
@@ -426,28 +385,36 @@ const TossBox = () => {
       <div className="max-w-6xl mx-auto grid lg:grid-cols-3 gap-6">
         {/* Main Game Area */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Crypto Selector - Scrollable Grid */}
+          {/* Crypto Selector */}
           <div className="bg-gray-800/50 backdrop-blur rounded-lg p-4 border border-gray-700">
             <div className="flex items-center justify-between mb-3">
               <h3 className="text-sm font-bold text-gray-400">Select Asset</h3>
-              <div className="text-xs text-gray-500">{CRYPTOS.length} available</div>
+              <div className="text-xs text-gray-500">{CRYPTOS.length} assets • Live prices</div>
             </div>
-            <div className="grid grid-cols-5 gap-2 max-h-32 overflow-y-auto pr-2" style={{ scrollbarWidth: 'thin' }}>
-              {CRYPTOS.map(crypto => (
-                <button
-                  key={crypto.symbol}
-                  onClick={() => setSelectedCrypto(crypto.symbol)}
-                  disabled={gameState === 'active'}
-                  className={`py-2 px-3 rounded-lg font-bold text-sm transition-all disabled:opacity-50 ${
-                    selectedCrypto === crypto.symbol
-                      ? 'bg-purple-600 text-white ring-2 ring-purple-400'
-                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                  }`}
-                  title={crypto.name}
-                >
-                  {crypto.symbol}
-                </button>
-              ))}
+            <div className="grid grid-cols-5 gap-2 max-h-32 overflow-y-auto pr-2">
+              {CRYPTOS.map(crypto => {
+                const price = allPrices[crypto.symbol];
+                return (
+                  <button
+                    key={crypto.symbol}
+                    onClick={() => setSelectedCrypto(crypto.symbol)}
+                    disabled={gameState === 'active'}
+                    className={`p-2 rounded-lg font-bold text-sm transition-all disabled:opacity-50 ${
+                      selectedCrypto === crypto.symbol
+                        ? 'bg-purple-600 text-white ring-2 ring-purple-400'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    }`}
+                    title={`${crypto.name} - $${formatPrice(price)}`}
+                  >
+                    <div>{crypto.symbol}</div>
+                    {price > 0 && (
+                      <div className="text-[10px] opacity-70 mt-0.5">
+                        ${price < 1 ? price.toFixed(4) : price.toFixed(0)}
+                      </div>
+                    )}
+                  </button>
+                );
+              })}
             </div>
           </div>
 
@@ -455,17 +422,10 @@ const TossBox = () => {
           <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
             <div className="flex justify-between items-center mb-4">
               <div>
-                {priceLoading ? (
-                  <>
-                    <div className="h-9 w-32 bg-gray-700 animate-pulse rounded mb-1"></div>
-                    <div className="text-sm text-gray-400">{selectedCrypto}/USD</div>
-                  </>
-                ) : (
-                  <>
-                    <div className="text-3xl font-bold">${currentPrice.toFixed(2)}</div>
-                    <div className="text-sm text-gray-400">{selectedCrypto}/USD</div>
-                  </>
-                )}
+                <div className="text-3xl font-bold">
+                  ${formatPrice(currentPrice)}
+                </div>
+                <div className="text-sm text-gray-400">{selectedCrypto}/USD</div>
               </div>
               
               {gameState === 'active' && (
@@ -475,7 +435,7 @@ const TossBox = () => {
                 </div>
               )}
               
-              {startPrice && currentPrice > 0 && !priceLoading && (
+              {startPrice && currentPrice > 0 && (
                 <div className={`text-right ${currentPrice >= startPrice ? 'text-green-400' : 'text-red-400'}`}>
                   <div className="text-2xl font-bold">
                     {currentPrice >= startPrice ? '+' : ''}{(currentPrice - startPrice).toFixed(2)}
@@ -487,30 +447,27 @@ const TossBox = () => {
               )}
             </div>
 
-            {priceLoading ? (
-              <div className="h-[250px] flex items-center justify-center">
-                <div className="text-center">
-                  <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
-                  <div className="text-gray-400">Loading price data...</div>
-                </div>
-              </div>
-            ) : priceData.length > 0 ? (
+            {currentPrice > 0 && priceData.length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
                 <LineChart data={priceData}>
                   <XAxis dataKey="time" hide />
-                  <YAxis domain={['dataMin - 50', 'dataMax + 50']} hide />
+                  <YAxis domain={['auto', 'auto']} hide />
                   <Line 
                     type="monotone" 
                     dataKey="price" 
                     stroke="#a855f7" 
                     strokeWidth={3}
                     dot={false}
+                    isAnimationActive={false}
                   />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
-              <div className="h-[250px] flex items-center justify-center text-gray-500">
-                No price data available
+              <div className="h-[250px] flex items-center justify-center">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
+                  <div className="text-gray-400">Connecting to live feed...</div>
+                </div>
               </div>
             )}
           </div>
@@ -526,7 +483,6 @@ const TossBox = () => {
               </div>
             ) : (
               <>
-                {/* Prediction Buttons */}
                 <div className="grid grid-cols-2 gap-4 mb-6">
                   <button
                     onClick={() => setPrediction('up')}
@@ -555,7 +511,6 @@ const TossBox = () => {
                   </button>
                 </div>
 
-                {/* Multiplier */}
                 <div className="mb-6">
                   <label className="block text-sm text-gray-400 mb-2">Confidence Multiplier</label>
                   <div className="flex gap-2">
@@ -569,7 +524,6 @@ const TossBox = () => {
                   </p>
                 </div>
 
-                {/* Stake Amount */}
                 <div className="mb-6">
                   <label className="block text-sm text-gray-400 mb-2">Stake Amount (SOL)</label>
                   <input
@@ -588,10 +542,9 @@ const TossBox = () => {
                   </div>
                 </div>
 
-                {/* Place Bet Button */}
                 <button
                   onClick={placeBet}
-                  disabled={!prediction || !publicKey || gameState === 'active' || placingBet || stake > balance || priceLoading}
+                  disabled={!prediction || !publicKey || gameState === 'active' || placingBet || stake > balance || currentPrice === 0}
                   className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 py-4 rounded-lg font-bold text-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {placingBet ? 'Placing Bet...' : gameState === 'active' ? 'Round In Progress...' : 'Place Bet'}
