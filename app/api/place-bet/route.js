@@ -1,7 +1,7 @@
 // app/api/place-bet/route.ts
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { verifyTransaction, getTreasuryWallet } from "@/lib/solana"; // lib/solana.js
+import { supabaseAdmin } from "@/lib/supabaseAdmin"; // service-role client (server-only)
+import { verifyTransaction } from "@/lib/solana"; // lib/solana.js (hardened)
 import { getPythSnapshot } from "@/lib/prices/getPythSnapshot";
 
 export const runtime = "nodejs";
@@ -13,7 +13,7 @@ function asNumber(v: any) {
 }
 
 function isUniqueViolation(err: any) {
-  // Postgres unique violation code
+  // Postgres unique violation
   return err?.code === "23505";
 }
 
@@ -54,10 +54,19 @@ export async function POST(request: Request) {
       );
     }
 
-    // ---- idempotency: tx_signature replay guard (recommended unique index)
+    const treasury = process.env.NEXT_PUBLIC_TREASURY_WALLET;
+    if (!treasury) {
+      return NextResponse.json(
+        { error: "Server misconfigured: missing NEXT_PUBLIC_TREASURY_WALLET" },
+        { status: 500 }
+      );
+    }
+
+    // ---- idempotency: tx_signature replay guard
+    // Recommended UNIQUE index on bets(tx_signature) WHERE tx_signature IS NOT NULL
     const { data: existingBet, error: existingErr } = await supabaseAdmin
       .from("bets")
-      .select("id, round_id, wallet_address")
+      .select("id, round_id")
       .eq("tx_signature", txSignature)
       .maybeSingle();
 
@@ -72,17 +81,20 @@ export async function POST(request: Request) {
       });
     }
 
-    // ---- verify on-chain transfer
-    // NOTE: your current verifyTransaction in lib/solana.js only checks recipient.
-    // We still pass expectedAmount + expectedRecipient (treasury) to align with your signature.
-    // After you harden verifyTransaction to validate amount + sender, this call will become fully safe.
-    const treasury = getTreasuryWallet();
-    const isValid = await verifyTransaction(txSignature, stakeAmount, treasury.toBase58());
+    // ---- verify on-chain transfer: amount + recipient + sender
+    // Signature: verifyTransaction(signature, expectedAmountSOL, expectedRecipient, expectedSender)
+    const isValid = await verifyTransaction(
+      txSignature,
+      stakeAmount,
+      treasury,
+      walletAddress
+    );
+
     if (!isValid) {
       return NextResponse.json({ error: "Invalid transaction" }, { status: 400 });
     }
 
-    // ---- get or create user (server-owned)
+    // ---- get or create user
     let { data: user, error: userErr } = await supabaseAdmin
       .from("users")
       .select("*")
@@ -114,7 +126,8 @@ export async function POST(request: Request) {
 
     if (roundErr) throw roundErr;
 
-    // ---- create round with PYTH snapshot if absent (race-safe)
+    // ---- create round with PYTH snapshot (canonical) if absent (race-safe)
+    // Recommended UNIQUE partial index: rounds(crypto) WHERE status='active'
     if (!activeRound) {
       const snap = await getPythSnapshot(crypto);
 
@@ -134,7 +147,7 @@ export async function POST(request: Request) {
         .single();
 
       if (newRoundErr) {
-        // Another request probably created the active round first (unique partial index)
+        // Another request probably created the round first
         const { data: retryRound, error: retryErr } = await supabaseAdmin
           .from("rounds")
           .select("*")
@@ -153,8 +166,8 @@ export async function POST(request: Request) {
       }
     }
 
-    // ---- enforce one bet per wallet per round
-    // Prefer DB uniqueness (ux_bets_round_wallet). We also do an app-level check for nicer errors.
+    // ---- enforce one bet per wallet per round (friendly error)
+    // Recommended UNIQUE index on bets(round_id, wallet_address)
     const { data: existingRoundBet, error: roundBetErr } = await supabaseAdmin
       .from("bets")
       .select("id")
@@ -172,7 +185,7 @@ export async function POST(request: Request) {
     }
 
     // ---- create bet
-    const potentialWin = stakeAmount * multiplier * 0.95; // 5% fee
+    const potentialWin = stakeAmount * multiplier * 0.95; // 5% platform fee
 
     const { data: bet, error: betError } = await supabaseAdmin
       .from("bets")
@@ -191,7 +204,7 @@ export async function POST(request: Request) {
       .single();
 
     if (betError) {
-      // If the unique index exists, handle the clean conflict message
+      // If unique indexes exist, return a clean conflict
       if (isUniqueViolation(betError)) {
         return NextResponse.json(
           { error: "Duplicate bet or tx already recorded." },
@@ -201,8 +214,8 @@ export async function POST(request: Request) {
       throw betError;
     }
 
-    // ---- record transaction (deposit)
-    // If you add a unique index on transactions(tx_signature) you should similarly catch duplicates.
+    // ---- record deposit transaction (optional but recommended)
+    // If you add UNIQUE index on transactions(tx_signature), also handle 23505 here.
     await supabaseAdmin.from("transactions").insert({
       user_id: user.id,
       wallet_address: walletAddress,
@@ -213,12 +226,12 @@ export async function POST(request: Request) {
     });
 
     // ---- update user stats
-    const totalWagered = asNumber(user.total_wagered);
-    const safeTotalWagered = Number.isFinite(totalWagered) ? totalWagered : 0;
+    const prevTotal = asNumber(user.total_wagered);
+    const safePrevTotal = Number.isFinite(prevTotal) ? prevTotal : 0;
 
     await supabaseAdmin
       .from("users")
-      .update({ total_wagered: safeTotalWagered + stakeAmount })
+      .update({ total_wagered: safePrevTotal + stakeAmount })
       .eq("id", user.id);
 
     return NextResponse.json({
