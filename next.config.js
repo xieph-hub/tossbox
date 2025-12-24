@@ -13,10 +13,3 @@ const nextConfig = {
 }
 
 module.exports = nextConfig
-```
-
----
-
-That's it! Just that code, nothing else. The error happened because you included this line in the file:
-```
-├── .env.local                       (Don't push this to GitHub!)
