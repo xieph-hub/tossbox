@@ -1,5 +1,6 @@
+// app/api/place-bet/route.ts
 import { NextResponse } from "next/server";
-import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabaseAdmin } from "@/lib/supabaseAdmin"; // service-role client (server-only)
 import { verifyTransaction } from "@/lib/solana";
 import { getPythSnapshot } from "@/lib/prices/getPythSnapshot";
 
@@ -14,6 +15,7 @@ function asNumber(v: any) {
 export async function POST(request: Request) {
   try {
     const body = await request.json();
+
     const walletAddress = (body.walletAddress || "").toString().trim();
     const prediction = (body.prediction || "").toString().trim();
     const multiplier = Number(body.multiplier);
@@ -21,27 +23,41 @@ export async function POST(request: Request) {
     const txSignature = (body.txSignature || "").toString().trim();
     const crypto = (body.crypto || "BTC").toString().trim().toUpperCase();
 
-    // Basic validation
+    // ---- validation
     if (!walletAddress || !txSignature) {
-      return NextResponse.json({ error: "walletAddress and txSignature required" }, { status: 400 });
+      return NextResponse.json(
+        { error: "walletAddress and txSignature required" },
+        { status: 400 }
+      );
     }
     if (!["up", "down"].includes(prediction)) {
-      return NextResponse.json({ error: "prediction must be 'up' or 'down'" }, { status: 400 });
+      return NextResponse.json(
+        { error: "prediction must be 'up' or 'down'" },
+        { status: 400 }
+      );
     }
     if (![1, 2, 5, 10].includes(multiplier)) {
-      return NextResponse.json({ error: "multiplier must be one of 1,2,5,10" }, { status: 400 });
+      return NextResponse.json(
+        { error: "multiplier must be one of 1,2,5,10" },
+        { status: 400 }
+      );
     }
     if (!Number.isFinite(stakeAmount) || stakeAmount <= 0) {
-      return NextResponse.json({ error: "stakeAmount must be > 0" }, { status: 400 });
+      return NextResponse.json(
+        { error: "stakeAmount must be > 0" },
+        { status: 400 }
+      );
     }
 
-    // Idempotency: if tx already recorded as a bet, return success
-    // (requires unique index on tx_signature recommended earlier)
-    const { data: existingBet } = await supabaseAdmin
+    // ---- idempotency: tx_signature replay guard
+    // Requires UNIQUE index on bets(tx_signature) WHERE tx_signature IS NOT NULL
+    const { data: existingBet, error: existingErr } = await supabaseAdmin
       .from("bets")
-      .select("id, round_id, wallet_address, crypto:rounds(crypto)")
+      .select("id, round_id, wallet_address")
       .eq("tx_signature", txSignature)
       .maybeSingle();
+
+    if (existingErr) throw existingErr;
 
     if (existingBet?.id) {
       return NextResponse.json({
@@ -52,13 +68,13 @@ export async function POST(request: Request) {
       });
     }
 
-    // Verify on-chain transfer (make sure this checks amount + recipient treasury wallet)
+    // ---- verify on-chain transfer (ensure this checks recipient treasury + amount)
     const isValid = await verifyTransaction(txSignature, stakeAmount);
     if (!isValid) {
       return NextResponse.json({ error: "Invalid transaction" }, { status: 400 });
     }
 
-    // Get or create user (server-owned)
+    // ---- get or create user
     let { data: user, error: userErr } = await supabaseAdmin
       .from("users")
       .select("*")
@@ -78,7 +94,7 @@ export async function POST(request: Request) {
       user = newUser;
     }
 
-    // Get active round for crypto (per-asset round)
+    // ---- fetch active round for this crypto
     let { data: activeRound, error: roundErr } = await supabaseAdmin
       .from("rounds")
       .select("*")
@@ -90,12 +106,10 @@ export async function POST(request: Request) {
 
     if (roundErr) throw roundErr;
 
-    // If no active round, create one using PYTH snapshot (canonical)
+    // ---- create round with PYTH snapshot (canonical) if absent
     if (!activeRound) {
       const snap = await getPythSnapshot(crypto);
 
-      // NOTE: With the unique index (one active round per crypto),
-      // two concurrent requests may race; one insert will fail and we retry fetch.
       const { data: newRound, error: newRoundErr } = await supabaseAdmin
         .from("rounds")
         .insert({
@@ -112,7 +126,7 @@ export async function POST(request: Request) {
         .single();
 
       if (newRoundErr) {
-        // If insert failed due to unique active round constraint, refetch
+        // Race-safe: someone else created the active round first
         const { data: retryRound, error: retryErr } = await supabaseAdmin
           .from("rounds")
           .select("*")
@@ -131,11 +145,26 @@ export async function POST(request: Request) {
       }
     }
 
-    // Optional: enforce "betting window" if you want (e.g., only first 55s)
-    // You can compute elapsed via activeRound.start_time and reject late bets.
+    // ---- enforce one bet per wallet per round
+    // Requires UNIQUE index on (round_id, wallet_address)
+    const { data: existingRoundBet, error: roundBetErr } = await supabaseAdmin
+      .from("bets")
+      .select("id")
+      .eq("round_id", activeRound.id)
+      .eq("wallet_address", walletAddress)
+      .maybeSingle();
 
-    // Create bet (5% fee)
-    const potentialWin = stakeAmount * multiplier * 0.95;
+    if (roundBetErr) throw roundBetErr;
+
+    if (existingRoundBet?.id) {
+      return NextResponse.json(
+        { error: "You already placed a bet for this round." },
+        { status: 409 }
+      );
+    }
+
+    // ---- create bet
+    const potentialWin = stakeAmount * multiplier * 0.95; // 5% fee
 
     const { data: bet, error: betError } = await supabaseAdmin
       .from("bets")
@@ -155,8 +184,8 @@ export async function POST(request: Request) {
 
     if (betError) throw betError;
 
-    // Record transaction (idempotency on tx_signature recommended in table)
-    const { error: txErr } = await supabaseAdmin.from("transactions").insert({
+    // ---- record transaction (deposit)
+    await supabaseAdmin.from("transactions").insert({
       user_id: user.id,
       wallet_address: walletAddress,
       type: "deposit",
@@ -165,13 +194,10 @@ export async function POST(request: Request) {
       status: "confirmed",
     });
 
-    if (txErr) {
-      // Not fatal to bet placement, but good to log
-      console.error("transactions insert failed:", txErr);
-    }
+    // ---- update user stats
+    const totalWagered =
+      Number.isFinite(asNumber(user.total_wagered)) ? asNumber(user.total_wagered) : 0;
 
-    // Update user stats
-    const totalWagered = asNumber(user.total_wagered) || 0;
     await supabaseAdmin
       .from("users")
       .update({ total_wagered: totalWagered + stakeAmount })
