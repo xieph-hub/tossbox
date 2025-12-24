@@ -1,3 +1,6 @@
+// lib/prices/getPythSnapshot.ts
+import "server-only";
+
 import { getPythUsdPrice } from "./pythCache";
 import { PYTH_FEED_IDS, assertSupportedSymbol } from "./pythFeedIds";
 
