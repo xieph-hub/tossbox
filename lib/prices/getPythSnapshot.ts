@@ -1,16 +1,13 @@
 // lib/prices/getPythSnapshot.ts
 import "server-only";
-
 import { getPythUsdPrice } from "./pythCache";
-import { PYTH_FEED_IDS, assertSupportedSymbol } from "./pythFeedIds";
 
 export async function getPythSnapshot(symbolRaw: string) {
-  const symbol = assertSupportedSymbol(symbolRaw);
-  const px = await getPythUsdPrice(symbol);
+  const px = await getPythUsdPrice(symbolRaw);
 
   return {
-    crypto: symbol,
-    pyth_feed_id: PYTH_FEED_IDS[symbol],
+    crypto: symbolRaw.toUpperCase().trim(),
+    pyth_feed_id: px.feedId,
     price: px.price,
     conf: px.conf ?? null,
     publish_time: px.publishTime, // unix seconds
