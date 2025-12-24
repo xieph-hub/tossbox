@@ -40,26 +40,106 @@ const TossBox = () => {
   // Loading states
   const [placingBet, setPlacingBet] = useState(false);
 
-  // Real-time WebSocket price updates
+  // Real-time price updates - Hybrid approach (WebSocket + REST fallback)
   useEffect(() => {
     const symbol = selectedCrypto.toLowerCase();
-    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}usdt@trade`);
+    let ws;
+    let reconnectAttempts = 0;
+    const maxReconnectAttempts = 3;
+    let isSubscribed = true;
 
-    ws.onmessage = (event) => {
-      const data = JSON.parse(event.data);
-      const price = parseFloat(data.p);
-      
-      setCurrentPrice(price);
-      setPriceData(prev => [...prev.slice(-29), { time: Date.now(), price }]);
+    const connectWebSocket = () => {
+      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}usdt@trade`);
+
+      ws.onopen = () => {
+        console.log('✅ WebSocket connected for', selectedCrypto);
+        reconnectAttempts = 0;
+      };
+
+      ws.onmessage = (event) => {
+        if (!isSubscribed) return;
+        const data = JSON.parse(event.data);
+        const price = parseFloat(data.p);
+        
+        setCurrentPrice(price);
+        setPriceData(prev => {
+          const newData = [...prev, { time: Date.now(), price }];
+          return newData.slice(-30);
+        });
+      };
+
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+
+      ws.onclose = () => {
+        if (!isSubscribed) return;
+        console.log('WebSocket closed for', selectedCrypto);
+        // Try to reconnect
+        if (reconnectAttempts < maxReconnectAttempts) {
+          reconnectAttempts++;
+          console.log(`Reconnecting... attempt ${reconnectAttempts}`);
+          setTimeout(connectWebSocket, 2000);
+        } else {
+          console.log('Falling back to REST API polling');
+          startPolling();
+        }
+      };
     };
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+    let pollingInterval;
+    const startPolling = () => {
+      const fetchPrice = async () => {
+        if (!isSubscribed) return;
+        try {
+          const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol.toUpperCase()}USDT`);
+          const data = await response.json();
+          const price = parseFloat(data.price);
+          
+          setCurrentPrice(price);
+          setPriceData(prev => {
+            const newData = [...prev, { time: Date.now(), price }];
+            return newData.slice(-30);
+          });
+        } catch (error) {
+          console.error('Failed to fetch price:', error);
+        }
+      };
+
+      fetchPrice(); // Immediate fetch
+      pollingInterval = setInterval(fetchPrice, 2000);
     };
 
+    // Fetch initial price immediately
+    const fetchInitialPrice = async () => {
+      try {
+        const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol.toUpperCase()}USDT`);
+        const data = await response.json();
+        const price = parseFloat(data.price);
+        setCurrentPrice(price);
+        setPriceData([{ time: Date.now(), price }]);
+      } catch (error) {
+        console.error('Failed to fetch initial price:', error);
+      }
+    };
+
+    fetchInitialPrice();
+
+    // Start WebSocket connection after a brief delay
+    setTimeout(() => {
+      if (isSubscribed) {
+        connectWebSocket();
+      }
+    }, 500);
+
+    // Cleanup
     return () => {
-      if (ws.readyState === WebSocket.OPEN) {
+      isSubscribed = false;
+      if (ws) {
         ws.close();
+      }
+      if (pollingInterval) {
+        clearInterval(pollingInterval);
       }
     };
   }, [selectedCrypto]);
@@ -356,7 +436,7 @@ const TossBox = () => {
               </ResponsiveContainer>
             ) : (
               <div className="h-[250px] flex items-center justify-center text-gray-500">
-                Connecting to live price feed...
+                Loading live price...
               </div>
             )}
           </div>
