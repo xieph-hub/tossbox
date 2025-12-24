@@ -1,21 +1,21 @@
 import { NextResponse } from 'next/server';
 
-const CRYPTO_IDS = {
-  'BTC': 'bitcoin',
-  'ETH': 'ethereum',
-  'SOL': 'solana',
-  'BNB': 'binancecoin',
-  'XRP': 'ripple',
-  'ADA': 'cardano',
-  'DOGE': 'dogecoin',
-  'MATIC': 'matic-network',
-  'DOT': 'polkadot',
-  'AVAX': 'avalanche-2',
-  'SHIB': 'shiba-inu',
-  'LINK': 'chainlink',
-  'UNI': 'uniswap',
-  'LTC': 'litecoin',
-  'PEPE': 'pepe'
+const BINANCE_SYMBOLS = {
+  'BTC': 'BTCUSDT',
+  'ETH': 'ETHUSDT',
+  'SOL': 'SOLUSDT',
+  'BNB': 'BNBUSDT',
+  'XRP': 'XRPUSDT',
+  'ADA': 'ADAUSDT',
+  'DOGE': 'DOGEUSDT',
+  'MATIC': 'MATICUSDT',
+  'DOT': 'DOTUSDT',
+  'AVAX': 'AVAXUSDT',
+  'SHIB': 'SHIBUSDT',
+  'LINK': 'LINKUSDT',
+  'UNI': 'UNIUSDT',
+  'LTC': 'LTCUSDT',
+  'TRX': 'TRXUSDT'
 };
 
 export async function GET(request) {
@@ -23,66 +23,45 @@ export async function GET(request) {
   const crypto = searchParams.get('crypto') || 'BTC';
   
   try {
-    const coinId = CRYPTO_IDS[crypto] || 'bitcoin';
+    const binanceSymbol = BINANCE_SYMBOLS[crypto] || 'BTCUSDT';
     
-    // Try CoinGecko first (more reliable for most coins)
     const response = await fetch(
-      `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`,
+      `https://api.binance.com/api/v3/ticker/price?symbol=${binanceSymbol}`,
       { 
         cache: 'no-store',
         next: { revalidate: 0 }
       }
     );
     
-    if (!response.ok) throw new Error('CoinGecko failed');
+    if (!response.ok) {
+      throw new Error(`Binance API error: ${response.status}`);
+    }
     
     const data = await response.json();
-    const price = data[coinId]?.usd;
+    const price = parseFloat(data.price);
     
-    if (!price) throw new Error('Price not found');
+    if (!price || isNaN(price)) {
+      throw new Error('Invalid price data');
+    }
     
     return NextResponse.json({
       crypto,
       price,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      source: 'binance'
     });
-  } catch (error) {
-    console.error('CoinGecko error:', error);
     
-    // Fallback to Binance
-    try {
-      const response = await fetch(
-        `https://api.binance.com/api/v3/ticker/price?symbol=${crypto}USDT`,
-        {
-          cache: 'no-store',
-          next: { revalidate: 0 }
-        }
-      );
-      
-      if (!response.ok) throw new Error('Binance failed');
-      
-      const data = await response.json();
-      const price = parseFloat(data.price);
-      
-      if (!price || isNaN(price)) throw new Error('Invalid price from Binance');
-      
-      return NextResponse.json({
+  } catch (error) {
+    console.error('Binance price API error:', error);
+    
+    return NextResponse.json(
+      { 
+        error: 'Failed to fetch price from Binance',
         crypto,
-        price,
         timestamp: Date.now(),
-        source: 'binance'
-      });
-    } catch (binanceError) {
-      console.error('Binance error:', binanceError);
-      
-      return NextResponse.json(
-        { 
-          error: 'Failed to fetch price from all sources',
-          crypto,
-          timestamp: Date.now()
-        },
-        { status: 500 }
-      );
-    }
+        message: error.message
+      },
+      { status: 500 }
+    );
   }
 }
