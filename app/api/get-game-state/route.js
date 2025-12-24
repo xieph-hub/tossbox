@@ -29,58 +29,34 @@ export async function GET(req: Request) {
 
     const roundId = activeRound?.id || null;
 
-    // Defaults when no active round exists yet
-    if (!roundId) {
-      // Recent winners for THIS crypto (join through rounds because bets has no crypto column)
-      const { data: recentWinners, error: winnersErr } = await supabase
+    // 2) Total pot + player count (0 if no active round)
+    let totalPot = 0;
+    let playerCount = 0;
+
+    if (roundId) {
+      const { data: betAmounts, error: betsErr } = await supabase
         .from("bets")
-        .select("wallet_address, actual_win, multiplier, rounds!inner(crypto)")
-        .eq("status", "won")
-        .eq("rounds.crypto", crypto)
-        .order("created_at", { ascending: false })
-        .limit(10);
+        .select("stake_amount")
+        .eq("round_id", roundId);
 
-      if (winnersErr) throw winnersErr;
+      if (betsErr) throw betsErr;
 
-      const winnersNormalized =
-        (recentWinners || []).map((w: any) => ({
-          wallet_address: w.wallet_address,
-          actual_win: num(w.actual_win),
-          multiplier: w.multiplier,
-        })) || [];
+      totalPot =
+        betAmounts?.reduce((sum: number, b: any) => sum + num(b.stake_amount), 0) ||
+        0;
 
-      return NextResponse.json({
-        crypto,
-        activeRound: null,
-        totalPot: 0,
-        playerCount: 0,
-        recentWinners: winnersNormalized,
-      });
+      const { count, error: countErr } = await supabase
+        .from("bets")
+        .select("*", { count: "exact", head: true })
+        .eq("round_id", roundId);
+
+      if (countErr) throw countErr;
+
+      playerCount = count || 0;
     }
 
-    // 2) Total pot for THIS round
-    // NOTE: numeric often returns as string from Postgres; we normalize.
-    const { data: betAmounts, error: betsErr } = await supabase
-      .from("bets")
-      .select("stake_amount")
-      .eq("round_id", roundId);
-
-    if (betsErr) throw betsErr;
-
-    const totalPot =
-      betAmounts?.reduce((sum: number, b: any) => sum + num(b.stake_amount), 0) ||
-      0;
-
-    // 3) Player count for THIS round
-    // With "one bet per wallet per round", this equals number of bets.
-    const { count: playerCount, error: countErr } = await supabase
-      .from("bets")
-      .select("*", { count: "exact", head: true })
-      .eq("round_id", roundId);
-
-    if (countErr) throw countErr;
-
-    // 4) Recent winners for THIS crypto (join through rounds)
+    // 3) Recent winners for THIS crypto
+    // Join via rounds because bets has no crypto column.
     const { data: recentWinners, error: winnersErr } = await supabase
       .from("bets")
       .select("wallet_address, actual_win, multiplier, rounds!inner(crypto)")
@@ -100,9 +76,9 @@ export async function GET(req: Request) {
 
     return NextResponse.json({
       crypto,
-      activeRound,
+      activeRound: activeRound || null,
       totalPot,
-      playerCount: playerCount || 0,
+      playerCount,
       recentWinners: winnersNormalized,
     });
   } catch (error: any) {
