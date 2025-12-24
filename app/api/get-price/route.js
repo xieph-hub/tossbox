@@ -25,7 +25,7 @@ export async function GET(request) {
   try {
     const coinId = CRYPTO_IDS[crypto] || 'bitcoin';
     
-    // Try CoinGecko first
+    // Try CoinGecko first (more reliable for most coins)
     const response = await fetch(
       `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`,
       { 
@@ -47,14 +47,42 @@ export async function GET(request) {
       timestamp: Date.now()
     });
   } catch (error) {
+    console.error('CoinGecko error:', error);
+    
     // Fallback to Binance
     try {
       const response = await fetch(
-        `https://api.binance.com/api/v3/ticker/price?symbol=${crypto}USDT`
+        `https://api.binance.com/api/v3/ticker/price?symbol=${crypto}USDT`,
+        {
+          cache: 'no-store',
+          next: { revalidate: 0 }
+        }
       );
+      
+      if (!response.ok) throw new Error('Binance failed');
+      
       const data = await response.json();
+      const price = parseFloat(data.price);
+      
+      if (!price || isNaN(price)) throw new Error('Invalid price from Binance');
       
       return NextResponse.json({
         crypto,
-        price: parseFloat(data.price),
-        timestamp:
+        price,
+        timestamp: Date.now(),
+        source: 'binance'
+      });
+    } catch (binanceError) {
+      console.error('Binance error:', binanceError);
+      
+      return NextResponse.json(
+        { 
+          error: 'Failed to fetch price from all sources',
+          crypto,
+          timestamp: Date.now()
+        },
+        { status: 500 }
+      );
+    }
+  }
+}
