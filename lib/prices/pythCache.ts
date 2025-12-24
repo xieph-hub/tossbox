@@ -1,81 +1,97 @@
 // lib/prices/pythCache.ts
 import "server-only";
-
 import { HermesClient } from "@pythnetwork/hermes-client";
-import { PYTH_FEED_IDS, assertSupportedSymbol, type SupportedSymbol } from "./pythFeedIds";
 
-const HERMES_URL = process.env.PYTH_HERMES_URL || "https://hermes.pyth.network";
-
-// Small cache to reduce Hermes calls when your API is hit repeatedly.
-// (On Vercel serverless, this only helps within a warm lambda instance.)
-const DEFAULT_CACHE_MS = 2_000;
-
-type PythUsdPrice = {
-  symbol: SupportedSymbol;
-  feedId: string;
-  price: number; // normalized USD price
-  conf: number | null; // normalized USD confidence interval
+type PythPx = {
+  price: number;
+  conf?: number | null;
   publishTime: number; // unix seconds
+  feedId: string;
+  symbol: string;
 };
 
-type CacheEntry = { ts: number; value: PythUsdPrice };
-const cache = new Map<string, CacheEntry>();
+const HERMES_URL = process.env.PYTH_HERMES_URL || "https://hermes.pyth.network";
+const client = new HermesClient(HERMES_URL);
 
-function normalizePriceObj(priceObj: any): { price: number; conf: number | null; publishTime: number } | null {
-  // Expected (typical) fields: price, conf, expo, publish_time
-  if (!priceObj) return null;
+// In-memory cache (good enough for serverless; will refill on cold starts)
+const FEED_ID_CACHE = new Map<string, string>();
 
-  const priceInt = Number(priceObj.price);
-  const confInt = priceObj.conf === undefined || priceObj.conf === null ? null : Number(priceObj.conf);
-  const expo = Number(priceObj.expo);
-  const publishTime = Number(priceObj.publish_time);
-
-  if (!Number.isFinite(priceInt) || !Number.isFinite(expo) || !Number.isFinite(publishTime)) return null;
-
-  // expo is usually negative, so 10^expo is a fraction.
-  const scale = Math.pow(10, expo);
-  const price = priceInt * scale;
-
-  if (!Number.isFinite(price) || price <= 0) return null;
-
-  let conf: number | null = null;
-  if (confInt !== null && Number.isFinite(confInt)) {
-    const confScaled = confInt * scale;
-    conf = Number.isFinite(confScaled) ? confScaled : null;
-  }
-
-  return { price, conf, publishTime };
+function normalizeSymbol(input: string) {
+  return input.toUpperCase().trim();
 }
 
-export async function getPythUsdPrice(symbolRaw: string, opts?: { cacheMs?: number }): Promise<PythUsdPrice> {
-  const symbol = assertSupportedSymbol(symbolRaw);
-  const feedId = PYTH_FEED_IDS[symbol];
-  const cacheMs = opts?.cacheMs ?? DEFAULT_CACHE_MS;
+/**
+ * Try to find a Pyth feed id for a symbol.
+ * We bias toward USD pairs.
+ */
+async function resolveFeedId(symbolRaw: string): Promise<{ feedId: string; feedSymbol: string }> {
+  const symbol = normalizeSymbol(symbolRaw);
+  const cached = FEED_ID_CACHE.get(symbol);
+  if (cached) return { feedId: cached, feedSymbol: `${symbol}/USD` };
 
-  const cached = cache.get(symbol);
-  if (cached && Date.now() - cached.ts < cacheMs) return cached.value;
+  // Hermes search (client-side search by query)
+  // NOTE: In hermes-client v2, method is getPriceFeeds (NOT getLatestPriceFeeds).
+  const feeds = await client.getPriceFeeds(symbol);
 
-  const client = new HermesClient(HERMES_URL);
-
-  // ✅ Your Hermes client version supports this method
-  const feeds: any[] = await client.getPriceFeeds([feedId]);
-  const feed = feeds?.[0];
-
-  // Most common shape: feed.price
-  const norm = normalizePriceObj(feed?.price);
-
-  if (!norm) {
-    throw new Error(`Invalid Pyth response for ${symbol} (feedId=${feedId})`);
+  if (!feeds || feeds.length === 0) {
+    throw new Error(`No Pyth feeds found for symbol query: ${symbol}`);
   }
 
-  const out: PythUsdPrice = {
-    symbol,
+  // We prefer an exact USD pair if present
+  // Common formats you may see: "Crypto.BTC/USD", "BTC/USD", etc.
+  const preferred = feeds.find((f: any) => {
+    const s = (f?.attributes?.symbol || "").toString().toUpperCase();
+    return s.includes(`${symbol}/USD`) || s.includes(`${symbol} / USD`) || s.endsWith(`${symbol}/USD`);
+  });
+
+  const picked = preferred || feeds[0];
+  const feedId = picked?.id;
+  const feedSymbol = picked?.attributes?.symbol || `${symbol}/USD`;
+
+  if (!feedId) throw new Error(`Failed to resolve feed id for ${symbol}`);
+
+  FEED_ID_CACHE.set(symbol, feedId);
+  return { feedId, feedSymbol };
+}
+
+function normalizePythPrice(priceObj: any): { price: number; conf?: number | null; publishTime: number } {
+  // Hermes “parsed” price objects typically include:
+  // price, conf, expo, publish_time
+  const price = Number(priceObj?.price);
+  const conf = priceObj?.conf != null ? Number(priceObj.conf) : null;
+  const expo = Number(priceObj?.expo);
+  const publishTime = Number(priceObj?.publish_time);
+
+  if (!Number.isFinite(price) || !Number.isFinite(expo) || !Number.isFinite(publishTime)) {
+    throw new Error("Invalid Pyth price object");
+  }
+
+  // apply exponent: realPrice = price * 10^expo
+  const real = price * Math.pow(10, expo);
+  const realConf = conf != null ? conf * Math.pow(10, expo) : null;
+
+  return { price: real, conf: realConf, publishTime };
+}
+
+export async function getPythUsdPrice(symbolRaw: string): Promise<PythPx> {
+  const symbol = normalizeSymbol(symbolRaw);
+  const { feedId, feedSymbol } = await resolveFeedId(symbol);
+
+  // Hermes latest update (parsed)
+  const latest = await client.getLatestPriceUpdates([feedId], { parsed: true });
+
+  const parsed = latest?.parsed?.[0];
+  const priceObj = parsed?.price;
+
+  if (!priceObj) throw new Error(`No latest price returned for feed ${feedId} (${feedSymbol})`);
+
+  const norm = normalizePythPrice(priceObj);
+
+  return {
     feedId,
+    symbol: feedSymbol,
     price: norm.price,
-    conf: norm.conf,
+    conf: norm.conf ?? null,
     publishTime: norm.publishTime,
   };
-
-  cache.set(symbol, { ts: Date.now(), value: out });
-  return out;
 }
