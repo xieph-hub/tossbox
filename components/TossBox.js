@@ -1,47 +1,46 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, Trophy, Users, DollarSign, Flame } from 'lucide-react';
 import Link from 'next/link';
 
-// 30+ CRYPTO ASSETS
+// 32 CRYPTO ASSETS
 const CRYPTOS = [
-  { symbol: 'BTC', name: 'Bitcoin', binance: 'BTCUSDT' },
-  { symbol: 'ETH', name: 'Ethereum', binance: 'ETHUSDT' },
-  { symbol: 'SOL', name: 'Solana', binance: 'SOLUSDT' },
-  { symbol: 'BNB', name: 'BNB', binance: 'BNBUSDT' },
-  { symbol: 'XRP', name: 'Ripple', binance: 'XRPUSDT' },
-  { symbol: 'ADA', name: 'Cardano', binance: 'ADAUSDT' },
-  { symbol: 'DOGE', name: 'Dogecoin', binance: 'DOGEUSDT' },
-  { symbol: 'MATIC', name: 'Polygon', binance: 'MATICUSDT' },
-  { symbol: 'DOT', name: 'Polkadot', binance: 'DOTUSDT' },
-  { symbol: 'AVAX', name: 'Avalanche', binance: 'AVAXUSDT' },
-  { symbol: 'SHIB', name: 'Shiba Inu', binance: 'SHIBUSDT' },
-  { symbol: 'LINK', name: 'Chainlink', binance: 'LINKUSDT' },
-  { symbol: 'UNI', name: 'Uniswap', binance: 'UNIUSDT' },
-  { symbol: 'LTC', name: 'Litecoin', binance: 'LTCUSDT' },
-  { symbol: 'TRX', name: 'Tron', binance: 'TRXUSDT' },
-  { symbol: 'ATOM', name: 'Cosmos', binance: 'ATOMUSDT' },
-  { symbol: 'XLM', name: 'Stellar', binance: 'XLMUSDT' },
-  { symbol: 'ETC', name: 'Ethereum Classic', binance: 'ETCUSDT' },
-  { symbol: 'FIL', name: 'Filecoin', binance: 'FILUSDT' },
-  { symbol: 'HBAR', name: 'Hedera', binance: 'HBARUSDT' },
-  { symbol: 'APT', name: 'Aptos', binance: 'APTUSDT' },
-  { symbol: 'ARB', name: 'Arbitrum', binance: 'ARBUSDT' },
-  { symbol: 'OP', name: 'Optimism', binance: 'OPUSDT' },
-  { symbol: 'NEAR', name: 'Near', binance: 'NEARUSDT' },
-  { symbol: 'AAVE', name: 'Aave', binance: 'AAVEUSDT' },
-  { symbol: 'STX', name: 'Stacks', binance: 'STXUSDT' },
-  { symbol: 'INJ', name: 'Injective', binance: 'INJUSDT' },
-  { symbol: 'SUI', name: 'Sui', binance: 'SUIUSDT' },
-  { symbol: 'IMX', name: 'Immutable X', binance: 'IMXUSDT' },
-  { symbol: 'RENDER', name: 'Render', binance: 'RENDERUSDT' },
-  { symbol: 'FET', name: 'Fetch.ai', binance: 'FETUSDT' },
-  { symbol: 'PEPE', name: 'Pepe', binance: 'PEPEUSDT' }
+  { symbol: 'BTC', name: 'Bitcoin' },
+  { symbol: 'ETH', name: 'Ethereum' },
+  { symbol: 'SOL', name: 'Solana' },
+  { symbol: 'BNB', name: 'BNB' },
+  { symbol: 'XRP', name: 'Ripple' },
+  { symbol: 'ADA', name: 'Cardano' },
+  { symbol: 'DOGE', name: 'Dogecoin' },
+  { symbol: 'MATIC', name: 'Polygon' },
+  { symbol: 'DOT', name: 'Polkadot' },
+  { symbol: 'AVAX', name: 'Avalanche' },
+  { symbol: 'SHIB', name: 'Shiba Inu' },
+  { symbol: 'LINK', name: 'Chainlink' },
+  { symbol: 'UNI', name: 'Uniswap' },
+  { symbol: 'LTC', name: 'Litecoin' },
+  { symbol: 'TRX', name: 'Tron' },
+  { symbol: 'ATOM', name: 'Cosmos' },
+  { symbol: 'XLM', name: 'Stellar' },
+  { symbol: 'ETC', name: 'Ethereum Classic' },
+  { symbol: 'FIL', name: 'Filecoin' },
+  { symbol: 'HBAR', name: 'Hedera' },
+  { symbol: 'APT', name: 'Aptos' },
+  { symbol: 'ARB', name: 'Arbitrum' },
+  { symbol: 'OP', name: 'Optimism' },
+  { symbol: 'NEAR', name: 'Near' },
+  { symbol: 'AAVE', name: 'Aave' },
+  { symbol: 'STX', name: 'Stacks' },
+  { symbol: 'INJ', name: 'Injective' },
+  { symbol: 'SUI', name: 'Sui' },
+  { symbol: 'IMX', name: 'Immutable X' },
+  { symbol: 'RENDER', name: 'Render' },
+  { symbol: 'FET', name: 'Fetch.ai' },
+  { symbol: 'PEPE', name: 'Pepe' }
 ];
 
 const TossBox = () => {
@@ -65,69 +64,119 @@ const TossBox = () => {
   const [recentWinners, setRecentWinners] = useState([]);
   const [placingBet, setPlacingBet] = useState(false);
 
-  // PURE REST API - NO WEBSOCKET
-  useEffect(() => {
-    const crypto = CRYPTOS.find(c => c.symbol === selectedCrypto);
-    if (!crypto) {
-      console.error('❌ Crypto not found:', selectedCrypto);
-      return;
-    }
+  const chartContainerRef = useRef(null);
+  const chartRef = useRef(null);
+  const seriesRef = useRef(null);
 
+  // PRICE FEED - 2 second polling
+  useEffect(() => {
     let active = true;
-    console.log('🔄 Starting REST-ONLY price feed for', selectedCrypto);
+    console.log('🔄 Starting price feed for', selectedCrypto);
 
     const fetchPrice = async () => {
       if (!active) return;
       
       try {
-        console.log('📡 Fetching:', crypto.binance);
         const url = `/api/get-price?crypto=${selectedCrypto}`;
+        const res = await fetch(url);
         
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: {
-            'Accept': 'application/json'
-          }
-        });
-        
-        console.log('Response status:', res.status);
-        
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
-        }
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         
         const data = await res.json();
-        console.log('📊 Raw data:', data);
-        
         const price = parseFloat(data.price);
         
-        if (!price || isNaN(price)) {
-          throw new Error('Invalid price: ' + data.price);
-        }
+        if (!price || isNaN(price)) throw new Error('Invalid price');
         
         console.log('✅ PRICE:', selectedCrypto, '=', price);
         
         if (active) {
           setCurrentPrice(price);
-          setPriceData(prev => [...prev.slice(-29), { time: Date.now(), price }]);
+          const timestamp = Date.now() / 1000;
+          setPriceData(prev => {
+            const newData = [...prev, { time: timestamp, value: price }];
+            return newData.slice(-100);
+          });
         }
       } catch (err) {
-        console.error('❌ Price fetch error:', err.message);
+        console.error('❌ Price error:', err.message);
       }
     };
 
-    // Fetch immediately
+    setPriceData([]);
+    setCurrentPrice(0);
     fetchPrice();
     
-    // Then poll every 2 seconds
-    const interval = setInterval(fetchPrice, 2000);
+    const interval = setInterval(fetchPrice, 2000); // 2 seconds
 
     return () => {
       active = false;
       clearInterval(interval);
-      console.log('🛑 Stopped price feed for', selectedCrypto);
     };
   }, [selectedCrypto]);
+
+  // CHART RENDERING
+  useEffect(() => {
+    if (!chartContainerRef.current || priceData.length < 2) return;
+
+    import('lightweight-charts').then(({ createChart }) => {
+      if (chartRef.current) {
+        chartRef.current.remove();
+      }
+
+      const chart = createChart(chartContainerRef.current, {
+        width: chartContainerRef.current.clientWidth,
+        height: 300,
+        layout: {
+          background: { color: 'transparent' },
+          textColor: '#9CA3AF',
+        },
+        grid: {
+          vertLines: { color: '#374151' },
+          horzLines: { color: '#374151' },
+        },
+        timeScale: {
+          timeVisible: true,
+          secondsVisible: true,
+          borderColor: '#4B5563',
+        },
+        rightPriceScale: {
+          borderColor: '#4B5563',
+        },
+      });
+
+      const series = chart.addLineSeries({
+        color: '#A855F7',
+        lineWidth: 2,
+        crosshairMarkerVisible: true,
+        crosshairMarkerRadius: 4,
+        priceLineVisible: true,
+        lastValueVisible: true,
+      });
+
+      series.setData(priceData);
+      chart.timeScale().fitContent();
+
+      chartRef.current = chart;
+      seriesRef.current = series;
+
+      const handleResize = () => {
+        if (chartContainerRef.current && chartRef.current) {
+          chartRef.current.applyOptions({
+            width: chartContainerRef.current.clientWidth,
+          });
+        }
+      };
+
+      window.addEventListener('resize', handleResize);
+
+      return () => {
+        window.removeEventListener('resize', handleResize);
+        if (chartRef.current) {
+          chartRef.current.remove();
+        }
+      };
+    });
+  }, [priceData]);
 
   useEffect(() => {
     fetchGameState();
@@ -331,7 +380,7 @@ const TossBox = () => {
       <div className="max-w-6xl mx-auto grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
           <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-            <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset • {CRYPTOS.length} Available • Live Binance Prices</h3>
+            <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset • {CRYPTOS.length} Available • Live Prices</h3>
             <div className="grid grid-cols-6 gap-2 max-h-48 overflow-y-auto pr-2">
               {CRYPTOS.map(c => (
                 <button
@@ -339,8 +388,6 @@ const TossBox = () => {
                   onClick={() => {
                     console.log('🔄 Switching to', c.symbol);
                     setSelectedCrypto(c.symbol);
-                    setPriceData([]);
-                    setCurrentPrice(0);
                   }}
                   disabled={gameState === 'active'}
                   className={`py-2 px-1 rounded-lg font-bold text-xs transition-all disabled:opacity-50 ${
@@ -360,7 +407,7 @@ const TossBox = () => {
             <div className="flex justify-between items-center mb-4">
               <div>
                 <div className="text-3xl font-bold">${formatPrice(currentPrice)}</div>
-                <div className="text-sm text-gray-400">{selectedCrypto}/USD</div>
+                <div className="text-sm text-gray-400">{selectedCrypto}/USD • Live</div>
               </div>
               
               {gameState === 'active' && (
@@ -381,19 +428,17 @@ const TossBox = () => {
             </div>
 
             {currentPrice > 0 && priceData.length > 1 ? (
-              <ResponsiveContainer width="100%" height={250}>
-                <LineChart data={priceData}>
-                  <XAxis dataKey="time" hide />
-                  <YAxis domain={['auto', 'auto']} hide />
-                  <Line type="monotone" dataKey="price" stroke="#a855f7" strokeWidth={3} dot={false} isAnimationActive={false} />
-                </LineChart>
-              </ResponsiveContainer>
+              <div 
+                ref={chartContainerRef}
+                className="w-full"
+                style={{ height: '300px' }}
+              />
             ) : (
-              <div className="h-[250px] flex items-center justify-center">
+              <div className="h-[300px] flex items-center justify-center">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
                   <div className="text-gray-400">
-                    {currentPrice === 0 ? `Fetching ${selectedCrypto} price...` : 'Building chart...'}
+                    {currentPrice === 0 ? `Loading ${selectedCrypto}...` : 'Building chart...'}
                   </div>
                 </div>
               </div>
@@ -505,7 +550,7 @@ const TossBox = () => {
               <li>7. Winners split the pot!</li>
             </ol>
             <div className="mt-4 p-3 bg-purple-900/30 rounded border border-purple-700 text-xs">
-              5% platform fee • Peer-to-peer betting • Live Binance prices
+              5% platform fee • Peer-to-peer betting • Live CoinGecko prices
             </div>
           </div>
         </div>
