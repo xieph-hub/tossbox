@@ -1,21 +1,38 @@
 import { NextResponse } from 'next/server';
 
-const BINANCE_SYMBOLS = {
-  'BTC': 'BTCUSDT',
-  'ETH': 'ETHUSDT',
-  'SOL': 'SOLUSDT',
-  'BNB': 'BNBUSDT',
-  'XRP': 'XRPUSDT',
-  'ADA': 'ADAUSDT',
-  'DOGE': 'DOGEUSDT',
-  'MATIC': 'MATICUSDT',
-  'DOT': 'DOTUSDT',
-  'AVAX': 'AVAXUSDT',
-  'SHIB': 'SHIBUSDT',
-  'LINK': 'LINKUSDT',
-  'UNI': 'UNIUSDT',
-  'LTC': 'LTCUSDT',
-  'TRX': 'TRXUSDT'
+const COINGECKO_IDS = {
+  'BTC': 'bitcoin',
+  'ETH': 'ethereum',
+  'SOL': 'solana',
+  'BNB': 'binancecoin',
+  'XRP': 'ripple',
+  'ADA': 'cardano',
+  'DOGE': 'dogecoin',
+  'MATIC': 'matic-network',
+  'DOT': 'polkadot',
+  'AVAX': 'avalanche-2',
+  'SHIB': 'shiba-inu',
+  'LINK': 'chainlink',
+  'UNI': 'uniswap',
+  'LTC': 'litecoin',
+  'TRX': 'tron',
+  'ATOM': 'cosmos',
+  'XLM': 'stellar',
+  'ETC': 'ethereum-classic',
+  'FIL': 'filecoin',
+  'HBAR': 'hedera-hashgraph',
+  'APT': 'aptos',
+  'ARB': 'arbitrum',
+  'OP': 'optimism',
+  'NEAR': 'near',
+  'AAVE': 'aave',
+  'STX': 'blockstack',
+  'INJ': 'injective-protocol',
+  'SUI': 'sui',
+  'IMX': 'immutable-x',
+  'RENDER': 'render-token',
+  'FET': 'fetch-ai',
+  'PEPE': 'pepe'
 };
 
 export async function GET(request) {
@@ -23,43 +40,51 @@ export async function GET(request) {
   const crypto = searchParams.get('crypto') || 'BTC';
   
   try {
-    const binanceSymbol = BINANCE_SYMBOLS[crypto] || 'BTCUSDT';
+    const coinId = COINGECKO_IDS[crypto];
+    
+    if (!coinId) {
+      return NextResponse.json(
+        { error: `Unknown crypto symbol: ${crypto}` },
+        { status: 400 }
+      );
+    }
+    
+    console.log(`Fetching price for ${crypto} (${coinId})...`);
     
     const response = await fetch(
-      `https://api.binance.com/api/v3/ticker/price?symbol=${binanceSymbol}`,
-      { 
-        cache: 'no-store',
-        next: { revalidate: 0 }
-      }
+      `https://api.coingecko.com/api/v3/simple/price?ids=${coinId}&vs_currencies=usd`,
+      { cache: 'no-store' }
     );
     
     if (!response.ok) {
-      throw new Error(`Binance API error: ${response.status}`);
+      throw new Error(`CoinGecko API returned ${response.status}`);
     }
     
     const data = await response.json();
-    const price = parseFloat(data.price);
+    const price = data[coinId]?.usd;
     
     if (!price || isNaN(price)) {
-      throw new Error('Invalid price data');
+      throw new Error('Invalid price data from CoinGecko');
     }
+    
+    console.log(`✅ ${crypto}: $${price}`);
     
     return NextResponse.json({
       crypto,
       price,
       timestamp: Date.now(),
-      source: 'binance'
+      source: 'coingecko'
     });
     
   } catch (error) {
-    console.error('Binance price API error:', error);
+    console.error(`❌ Price API error for ${crypto}:`, error.message);
     
     return NextResponse.json(
       { 
-        error: 'Failed to fetch price from Binance',
+        error: 'Failed to fetch price',
         crypto,
-        timestamp: Date.now(),
-        message: error.message
+        message: error.message,
+        timestamp: Date.now()
       },
       { status: 500 }
     );
