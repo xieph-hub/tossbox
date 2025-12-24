@@ -18,7 +18,7 @@ export async function GET(req: Request) {
       conf: px.conf ?? null,
       publishTime: px.publishTime,
       timestamp: Date.now(),
-      source: "pyth", // <- settlement/oracle source
+      source: "pyth", // canonical settlement source
       feedId: px.feedId,
       feedSymbol: px.symbol,
     });
