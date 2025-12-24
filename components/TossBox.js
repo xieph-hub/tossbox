@@ -8,7 +8,6 @@ import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, Trophy, Users, DollarSign, Flame } from 'lucide-react';
 import Link from 'next/link';
 
-// Crypto options
 const CRYPTOS = [
   { symbol: 'BTC', binance: 'BTCUSDT' },
   { symbol: 'ETH', binance: 'ETHUSDT' },
@@ -48,39 +47,94 @@ const TossBox = () => {
   const [recentWinners, setRecentWinners] = useState([]);
   const [placingBet, setPlacingBet] = useState(false);
 
-  // SIMPLE PRICE FEED - Just works!
+  // BINANCE REST API - Global Standard, Always Works
   useEffect(() => {
     const crypto = CRYPTOS.find(c => c.symbol === selectedCrypto);
     if (!crypto) return;
 
     let active = true;
+    let ws = null;
 
+    console.log(`🔄 Switching to ${selectedCrypto}...`);
+
+    // Immediate REST fetch
     const fetchPrice = async () => {
       if (!active) return;
       
       try {
-        const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${crypto.binance}`);
-        const data = await res.json();
+        const response = await fetch(
+          `https://api.binance.com/api/v3/ticker/price?symbol=${crypto.binance}`,
+          { cache: 'no-store' }
+        );
+        
+        if (!response.ok) throw new Error('Binance API error');
+        
+        const data = await response.json();
         const price = parseFloat(data.price);
         
         if (price && !isNaN(price) && active) {
+          console.log(`💰 ${selectedCrypto}: $${price}`);
           setCurrentPrice(price);
           setPriceData(prev => [...prev.slice(-29), { time: Date.now(), price }]);
         }
-      } catch (err) {
-        console.error('Price fetch error:', err);
+      } catch (error) {
+        console.error('REST API error:', error);
       }
     };
 
-    // Fetch immediately
-    fetchPrice();
-    
-    // Then every 2 seconds
-    const interval = setInterval(fetchPrice, 2000);
+    // WebSocket for real-time updates
+    const connectWebSocket = () => {
+      if (!active) return;
+      
+      const wsUrl = `wss://stream.binance.com:9443/ws/${crypto.binance.toLowerCase()}@ticker`;
+      console.log(`🔌 Connecting WebSocket: ${wsUrl}`);
+      
+      ws = new WebSocket(wsUrl);
+      
+      ws.onopen = () => {
+        console.log(`✅ WebSocket connected: ${selectedCrypto}`);
+      };
+      
+      ws.onmessage = (event) => {
+        if (!active) return;
+        
+        try {
+          const ticker = JSON.parse(event.data);
+          const price = parseFloat(ticker.c); // 'c' = current/close price
+          
+          if (price && !isNaN(price)) {
+            setCurrentPrice(price);
+            setPriceData(prev => [...prev.slice(-29), { time: Date.now(), price }]);
+          }
+        } catch (error) {
+          console.error('WebSocket parse error:', error);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        console.error('WebSocket error:', error);
+      };
+      
+      ws.onclose = () => {
+        if (active) {
+          console.log('WebSocket closed, reconnecting in 3s...');
+          setTimeout(connectWebSocket, 3000);
+        }
+      };
+    };
 
+    // Execute: Fetch immediately, then start WebSocket
+    fetchPrice();
+    setTimeout(() => {
+      if (active) connectWebSocket();
+    }, 500);
+
+    // Cleanup
     return () => {
       active = false;
-      clearInterval(interval);
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        ws.close();
+      }
     };
   }, [selectedCrypto]);
 
@@ -142,7 +196,7 @@ const TossBox = () => {
   };
 
   const placeBet = async () => {
-    if (!prediction || !publicKey || placingBet) return;
+    if (!prediction || !publicKey || placingBet || currentPrice === 0) return;
     
     setPlacingBet(true);
     
@@ -180,13 +234,13 @@ const TossBox = () => {
         setCountdown(60);
         setBalance(prev => prev - stake);
         await fetchGameState();
-        alert('Bet placed! Good luck! 🎲');
+        alert('✅ Bet placed successfully!');
       } else {
-        alert('Failed: ' + (result.error || 'Unknown error'));
+        alert('❌ Failed: ' + (result.error || 'Unknown error'));
       }
     } catch (err) {
       console.error('Bet error:', err);
-      alert('Failed: ' + err.message);
+      alert('❌ Error: ' + err.message);
     } finally {
       setPlacingBet(false);
     }
@@ -217,7 +271,8 @@ const TossBox = () => {
   );
 
   const formatPrice = (p) => {
-    if (!p) return '0.00';
+    if (!p || p === 0) return '0.00';
+    if (p < 0.001) return p.toFixed(8);
     if (p < 0.01) return p.toFixed(6);
     if (p < 1) return p.toFixed(4);
     return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -235,8 +290,8 @@ const TossBox = () => {
           <div className="flex items-center gap-4">
             {publicKey && (
               <div className="flex gap-2">
-                <Link href="/profile" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold transition-all">Profile</Link>
-                <Link href="/leaderboard" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold transition-all">Leaderboard</Link>
+                <Link href="/profile" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold">Profile</Link>
+                <Link href="/leaderboard" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold">Leaderboard</Link>
               </div>
             )}
             
@@ -254,7 +309,7 @@ const TossBox = () => {
       </div>
 
       <div className="max-w-6xl mx-auto grid grid-cols-3 gap-4 mb-6">
-        <div className="bg-gray-800/50 backdrop-blur rounded-lg p-4 border border-gray-700">
+        <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
           <div className="flex items-center gap-2 text-gray-400 mb-1">
             <DollarSign size={16} />
             <span className="text-sm">Total Pot</span>
@@ -262,7 +317,7 @@ const TossBox = () => {
           <div className="text-2xl font-bold text-green-400">{totalPot.toFixed(2)} SOL</div>
         </div>
         
-        <div className="bg-gray-800/50 backdrop-blur rounded-lg p-4 border border-gray-700">
+        <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
           <div className="flex items-center gap-2 text-gray-400 mb-1">
             <Users size={16} />
             <span className="text-sm">Active Players</span>
@@ -270,7 +325,7 @@ const TossBox = () => {
           <div className="text-2xl font-bold text-blue-400">{playerCount}</div>
         </div>
         
-        <div className="bg-gray-800/50 backdrop-blur rounded-lg p-4 border border-gray-700">
+        <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
           <div className="flex items-center gap-2 text-gray-400 mb-1">
             <Trophy size={16} />
             <span className="text-sm">Your Streak</span>
@@ -284,9 +339,8 @@ const TossBox = () => {
 
       <div className="max-w-6xl mx-auto grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
-          {/* Crypto Selector */}
-          <div className="bg-gray-800/50 backdrop-blur rounded-lg p-4 border border-gray-700">
-            <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset ({CRYPTOS.length} available)</h3>
+          <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
+            <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset • Live Prices via Binance</h3>
             <div className="grid grid-cols-5 gap-2">
               {CRYPTOS.map(c => (
                 <button
@@ -297,7 +351,7 @@ const TossBox = () => {
                     setCurrentPrice(0);
                   }}
                   disabled={gameState === 'active'}
-                  className={`py-3 px-2 rounded-lg font-bold text-sm transition-all disabled:opacity-50 ${
+                  className={`py-3 rounded-lg font-bold transition-all disabled:opacity-50 ${
                     selectedCrypto === c.symbol
                       ? 'bg-purple-600 text-white ring-2 ring-purple-400'
                       : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
@@ -309,8 +363,7 @@ const TossBox = () => {
             </div>
           </div>
 
-          {/* Price Chart */}
-          <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
+          <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
             <div className="flex justify-between items-center mb-4">
               <div>
                 <div className="text-3xl font-bold">${formatPrice(currentPrice)}</div>
@@ -334,7 +387,7 @@ const TossBox = () => {
               )}
             </div>
 
-            {priceData.length > 0 ? (
+            {currentPrice > 0 && priceData.length > 1 ? (
               <ResponsiveContainer width="100%" height={250}>
                 <LineChart data={priceData}>
                   <XAxis dataKey="time" hide />
@@ -344,18 +397,20 @@ const TossBox = () => {
               </ResponsiveContainer>
             ) : (
               <div className="h-[250px] flex items-center justify-center">
-                <div className="animate-pulse text-gray-400">Loading {selectedCrypto} price...</div>
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
+                  <div className="text-gray-400">Loading {selectedCrypto}...</div>
+                </div>
               </div>
             )}
           </div>
 
-          {/* Betting Controls */}
-          <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
+          <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
             <h3 className="text-lg font-bold mb-4">Place Your Bet</h3>
             
             {!publicKey ? (
               <div className="text-center py-8">
-                <p className="text-gray-400 mb-4">Connect wallet to play</p>
+                <p className="text-gray-400 mb-4">Connect your Solana wallet to start</p>
                 <WalletMultiButton className="!bg-purple-600 hover:!bg-purple-700 !px-6 !py-3 !rounded-lg !font-bold" />
               </div>
             ) : (
@@ -366,7 +421,7 @@ const TossBox = () => {
                     disabled={gameState === 'active'}
                     className={`py-6 rounded-lg font-bold text-xl transition-all ${
                       prediction === 'up' ? 'bg-green-600 text-white scale-105' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                    } disabled:opacity-50`}
                   >
                     <TrendingUp className="mx-auto mb-2" size={32} />
                     PRICE UP
@@ -377,7 +432,7 @@ const TossBox = () => {
                     disabled={gameState === 'active'}
                     className={`py-6 rounded-lg font-bold text-xl transition-all ${
                       prediction === 'down' ? 'bg-red-600 text-white scale-105' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                    } disabled:opacity-50`}
                   >
                     <TrendingDown className="mx-auto mb-2" size={32} />
                     PRICE DOWN
@@ -395,7 +450,7 @@ const TossBox = () => {
                 </div>
 
                 <div className="mb-6">
-                  <label className="block text-sm text-gray-400 mb-2">Stake (SOL)</label>
+                  <label className="block text-sm text-gray-400 mb-2">Stake Amount (SOL)</label>
                   <input
                     type="number"
                     value={stake}
@@ -407,25 +462,24 @@ const TossBox = () => {
                     className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white font-bold text-xl disabled:opacity-50"
                   />
                   <div className="text-sm text-gray-400 mt-2">
-                    Win: <span className="text-green-400 font-bold">{(stake * multiplier * 0.95).toFixed(2)} SOL</span>
+                    Potential Win: <span className="text-green-400 font-bold">{(stake * multiplier * 0.95).toFixed(2)} SOL</span>
                   </div>
                 </div>
 
                 <button
                   onClick={placeBet}
                   disabled={!prediction || gameState === 'active' || placingBet || stake > balance || currentPrice === 0}
-                  className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 py-4 rounded-lg font-bold text-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 py-4 rounded-lg font-bold text-xl transition-all disabled:opacity-50"
                 >
-                  {placingBet ? 'Placing...' : gameState === 'active' ? 'In Progress...' : 'Place Bet'}
+                  {placingBet ? 'Placing Bet...' : gameState === 'active' ? 'Round In Progress' : 'Place Bet'}
                 </button>
               </>
             )}
           </div>
         </div>
 
-        {/* Sidebar */}
         <div className="space-y-4">
-          <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
+          <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
               <Trophy size={20} className="text-yellow-400" />
               Recent Winners
@@ -440,23 +494,23 @@ const TossBox = () => {
                   </div>
                 </div>
               ))}
-              {recentWinners.length === 0 && <div className="text-gray-500 text-sm text-center py-4">No winners yet!</div>}
+              {recentWinners.length === 0 && <div className="text-gray-500 text-center py-4 text-sm">No winners yet!</div>}
             </div>
           </div>
 
-          <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
-            <h3 className="text-lg font-bold mb-4">How to Play</h3>
+          <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
+            <h3 className="text-lg font-bold mb-4">How It Works</h3>
             <ol className="space-y-2 text-sm text-gray-300">
               <li>1. Connect Solana wallet</li>
-              <li>2. Pick a crypto asset</li>
+              <li>2. Pick crypto asset</li>
               <li>3. Predict UP or DOWN</li>
-              <li>4. Choose multiplier</li>
-              <li>5. Set stake amount</li>
-              <li>6. Watch 60s countdown</li>
+              <li>4. Choose multiplier (1x-10x)</li>
+              <li>5. Set your stake</li>
+              <li>6. Wait 60 seconds</li>
               <li>7. Winners split the pot!</li>
             </ol>
             <div className="mt-4 p-3 bg-purple-900/30 rounded border border-purple-700 text-xs">
-              5% fee • Peer-to-peer • No house edge
+              5% platform fee • Peer-to-peer betting • Powered by Binance price feeds
             </div>
           </div>
         </div>
