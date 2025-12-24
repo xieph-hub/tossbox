@@ -1,44 +1,25 @@
-// NOTE: Replace the placeholder feed IDs with the official Pyth feed IDs you choose.
-// Pyth feed IDs are stable identifiers used by Hermes.
-// Keep this file as the single source of truth for settlement mapping.
+// lib/prices/pythFeedIds.ts
+import "server-only";
 
-export const PYTH_FEED_IDS: Record<string, string> = {
-  BTC: "REPLACE_WITH_PYTH_BTC_USD_FEED_ID",
-  ETH: "REPLACE_WITH_PYTH_ETH_USD_FEED_ID",
-  SOL: "REPLACE_WITH_PYTH_SOL_USD_FEED_ID",
-  BNB: "REPLACE_WITH_PYTH_BNB_USD_FEED_ID",
-  XRP: "REPLACE_WITH_PYTH_XRP_USD_FEED_ID",
-  ADA: "REPLACE_WITH_PYTH_ADA_USD_FEED_ID",
-  DOGE: "REPLACE_WITH_PYTH_DOGE_USD_FEED_ID",
-  MATIC: "REPLACE_WITH_PYTH_MATIC_USD_FEED_ID",
-  DOT: "REPLACE_WITH_PYTH_DOT_USD_FEED_ID",
-  AVAX: "REPLACE_WITH_PYTH_AVAX_USD_FEED_ID",
-  SHIB: "REPLACE_WITH_PYTH_SHIB_USD_FEED_ID",
-  LINK: "REPLACE_WITH_PYTH_LINK_USD_FEED_ID",
-  UNI: "REPLACE_WITH_PYTH_UNI_USD_FEED_ID",
-  LTC: "REPLACE_WITH_PYTH_LTC_USD_FEED_ID",
-  TRX: "REPLACE_WITH_PYTH_TRX_USD_FEED_ID",
-  ATOM: "REPLACE_WITH_PYTH_ATOM_USD_FEED_ID",
-  XLM: "REPLACE_WITH_PYTH_XLM_USD_FEED_ID",
-  ETC: "REPLACE_WITH_PYTH_ETC_USD_FEED_ID",
-  FIL: "REPLACE_WITH_PYTH_FIL_USD_FEED_ID",
-  HBAR:"REPLACE_WITH_PYTH_HBAR_USD_FEED_ID",
-  APT: "REPLACE_WITH_PYTH_APT_USD_FEED_ID",
-  ARB: "REPLACE_WITH_PYTH_ARB_USD_FEED_ID",
-  OP:  "REPLACE_WITH_PYTH_OP_USD_FEED_ID",
-  NEAR:"REPLACE_WITH_PYTH_NEAR_USD_FEED_ID",
-  AAVE:"REPLACE_WITH_PYTH_AAVE_USD_FEED_ID",
-  STX: "REPLACE_WITH_PYTH_STX_USD_FEED_ID",
-  INJ: "REPLACE_WITH_PYTH_INJ_USD_FEED_ID",
-  SUI: "REPLACE_WITH_PYTH_SUI_USD_FEED_ID",
-  IMX: "REPLACE_WITH_PYTH_IMX_USD_FEED_ID",
-  RENDER:"REPLACE_WITH_PYTH_RENDER_USD_FEED_ID",
-  FET: "REPLACE_WITH_PYTH_FET_USD_FEED_ID",
-  PEPE:"REPLACE_WITH_PYTH_PEPE_USD_FEED_ID",
-};
+export const PYTH_FEED_IDS = {
+  BTC: "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b6a9b4b2d9ff1b2f1a0b2a4",
+  ETH: "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",
+  SOL: "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
 
-export function assertSupportedSymbol(symbol: string) {
-  const s = (symbol || "").toUpperCase().trim();
-  if (!PYTH_FEED_IDS[s]) throw new Error(`Unsupported symbol: ${symbol}`);
-  return s;
+  // Add the rest you support:
+  // BNB: "...",
+  // XRP: "...",
+  // ADA: "...",
+  // DOGE: "...",
+} as const;
+
+export type SupportedSymbol = keyof typeof PYTH_FEED_IDS;
+
+export function assertSupportedSymbol(symbolRaw: string): SupportedSymbol {
+  const symbol = (symbolRaw || "").toString().trim().toUpperCase();
+  if (!symbol) throw new Error("Missing symbol");
+  if (!(symbol in PYTH_FEED_IDS)) {
+    throw new Error(`Unsupported symbol: ${symbol}`);
+  }
+  return symbol as SupportedSymbol;
 }
