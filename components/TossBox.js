@@ -81,7 +81,7 @@ const TossBox = () => {
       
       try {
         console.log('📡 Fetching:', crypto.binance);
-        const url = `https://api.binance.com/api/v3/ticker/price?symbol=${crypto.binance}`;
+        const url = `/api/get-price?crypto=${selectedCrypto}`;
         
         const res = await fetch(url, {
           method: 'GET',
