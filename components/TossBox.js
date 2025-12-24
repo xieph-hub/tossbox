@@ -24,19 +24,29 @@ const TossBox = () => {
     { addr: '9Bv3...kL8q', amount: 1.2, multiplier: 2 },
   ]);
 
-  // Simulate price updates
+  // Real-time WebSocket price updates
   useEffect(() => {
-    const interval = setInterval(() => {
-      setCurrentPrice(prev => {
-        const change = (Math.random() - 0.5) * 50;
-        const newPrice = prev + change;
-        setPriceData(data => [...data.slice(-29), { time: Date.now(), price: newPrice }]);
-        return newPrice;
-      });
-    }, 1000);
+    const symbol = selectedCrypto.toLowerCase();
+    const ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}usdt@trade`);
 
-    return () => clearInterval(interval);
-  }, []);
+    ws.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      const price = parseFloat(data.p);
+      
+      setCurrentPrice(price);
+      setPriceData(prev => [...prev.slice(-29), { time: Date.now(), price }]);
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+
+    return () => {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
+    };
+  }, [selectedCrypto]);
 
   // Game countdown
   useEffect(() => {
