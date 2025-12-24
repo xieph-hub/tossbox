@@ -8,22 +8,40 @@ import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, Trophy, Users, DollarSign, Flame } from 'lucide-react';
 import Link from 'next/link';
 
+// 30+ CRYPTO ASSETS
 const CRYPTOS = [
-  { symbol: 'BTC', binance: 'BTCUSDT' },
-  { symbol: 'ETH', binance: 'ETHUSDT' },
-  { symbol: 'SOL', binance: 'SOLUSDT' },
-  { symbol: 'BNB', binance: 'BNBUSDT' },
-  { symbol: 'XRP', binance: 'XRPUSDT' },
-  { symbol: 'ADA', binance: 'ADAUSDT' },
-  { symbol: 'DOGE', binance: 'DOGEUSDT' },
-  { symbol: 'MATIC', binance: 'MATICUSDT' },
-  { symbol: 'DOT', binance: 'DOTUSDT' },
-  { symbol: 'AVAX', binance: 'AVAXUSDT' },
-  { symbol: 'SHIB', binance: 'SHIBUSDT' },
-  { symbol: 'LINK', binance: 'LINKUSDT' },
-  { symbol: 'UNI', binance: 'UNIUSDT' },
-  { symbol: 'LTC', binance: 'LTCUSDT' },
-  { symbol: 'TRX', binance: 'TRXUSDT' }
+  { symbol: 'BTC', name: 'Bitcoin', binance: 'BTCUSDT' },
+  { symbol: 'ETH', name: 'Ethereum', binance: 'ETHUSDT' },
+  { symbol: 'SOL', name: 'Solana', binance: 'SOLUSDT' },
+  { symbol: 'BNB', name: 'BNB', binance: 'BNBUSDT' },
+  { symbol: 'XRP', name: 'Ripple', binance: 'XRPUSDT' },
+  { symbol: 'ADA', name: 'Cardano', binance: 'ADAUSDT' },
+  { symbol: 'DOGE', name: 'Dogecoin', binance: 'DOGEUSDT' },
+  { symbol: 'MATIC', name: 'Polygon', binance: 'MATICUSDT' },
+  { symbol: 'DOT', name: 'Polkadot', binance: 'DOTUSDT' },
+  { symbol: 'AVAX', name: 'Avalanche', binance: 'AVAXUSDT' },
+  { symbol: 'SHIB', name: 'Shiba Inu', binance: 'SHIBUSDT' },
+  { symbol: 'LINK', name: 'Chainlink', binance: 'LINKUSDT' },
+  { symbol: 'UNI', name: 'Uniswap', binance: 'UNIUSDT' },
+  { symbol: 'LTC', name: 'Litecoin', binance: 'LTCUSDT' },
+  { symbol: 'TRX', name: 'Tron', binance: 'TRXUSDT' },
+  { symbol: 'ATOM', name: 'Cosmos', binance: 'ATOMUSDT' },
+  { symbol: 'XLM', name: 'Stellar', binance: 'XLMUSDT' },
+  { symbol: 'ETC', name: 'Ethereum Classic', binance: 'ETCUSDT' },
+  { symbol: 'FIL', name: 'Filecoin', binance: 'FILUSDT' },
+  { symbol: 'HBAR', name: 'Hedera', binance: 'HBARUSDT' },
+  { symbol: 'APT', name: 'Aptos', binance: 'APTUSDT' },
+  { symbol: 'ARB', name: 'Arbitrum', binance: 'ARBUSDT' },
+  { symbol: 'OP', name: 'Optimism', binance: 'OPUSDT' },
+  { symbol: 'NEAR', name: 'Near', binance: 'NEARUSDT' },
+  { symbol: 'AAVE', name: 'Aave', binance: 'AAVEUSDT' },
+  { symbol: 'STX', name: 'Stacks', binance: 'STXUSDT' },
+  { symbol: 'INJ', name: 'Injective', binance: 'INJUSDT' },
+  { symbol: 'SUI', name: 'Sui', binance: 'SUIUSDT' },
+  { symbol: 'IMX', name: 'Immutable X', binance: 'IMXUSDT' },
+  { symbol: 'RENDER', name: 'Render', binance: 'RENDERUSDT' },
+  { symbol: 'FET', name: 'Fetch.ai', binance: 'FETUSDT' },
+  { symbol: 'PEPE', name: 'Pepe', binance: 'PEPEUSDT' }
 ];
 
 const TossBox = () => {
@@ -47,94 +65,67 @@ const TossBox = () => {
   const [recentWinners, setRecentWinners] = useState([]);
   const [placingBet, setPlacingBet] = useState(false);
 
-  // BINANCE REST API - Global Standard, Always Works
+  // PURE REST API - NO WEBSOCKET
   useEffect(() => {
     const crypto = CRYPTOS.find(c => c.symbol === selectedCrypto);
-    if (!crypto) return;
+    if (!crypto) {
+      console.error('❌ Crypto not found:', selectedCrypto);
+      return;
+    }
 
     let active = true;
-    let ws = null;
+    console.log('🔄 Starting REST-ONLY price feed for', selectedCrypto);
 
-    console.log(`🔄 Switching to ${selectedCrypto}...`);
-
-    // Immediate REST fetch
     const fetchPrice = async () => {
       if (!active) return;
       
       try {
-        const response = await fetch(
-          `https://api.binance.com/api/v3/ticker/price?symbol=${crypto.binance}`,
-          { cache: 'no-store' }
-        );
+        console.log('📡 Fetching:', crypto.binance);
+        const url = `https://api.binance.com/api/v3/ticker/price?symbol=${crypto.binance}`;
         
-        if (!response.ok) throw new Error('Binance API error');
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: {
+            'Accept': 'application/json'
+          }
+        });
         
-        const data = await response.json();
+        console.log('Response status:', res.status);
+        
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+        }
+        
+        const data = await res.json();
+        console.log('📊 Raw data:', data);
+        
         const price = parseFloat(data.price);
         
-        if (price && !isNaN(price) && active) {
-          console.log(`💰 ${selectedCrypto}: $${price}`);
+        if (!price || isNaN(price)) {
+          throw new Error('Invalid price: ' + data.price);
+        }
+        
+        console.log('✅ PRICE:', selectedCrypto, '=', price);
+        
+        if (active) {
           setCurrentPrice(price);
           setPriceData(prev => [...prev.slice(-29), { time: Date.now(), price }]);
         }
-      } catch (error) {
-        console.error('REST API error:', error);
+      } catch (err) {
+        console.error('❌ Price fetch error:', err.message);
       }
     };
 
-    // WebSocket for real-time updates
-    const connectWebSocket = () => {
-      if (!active) return;
-      
-      const wsUrl = `wss://stream.binance.com:9443/ws/${crypto.binance.toLowerCase()}@ticker`;
-      console.log(`🔌 Connecting WebSocket: ${wsUrl}`);
-      
-      ws = new WebSocket(wsUrl);
-      
-      ws.onopen = () => {
-        console.log(`✅ WebSocket connected: ${selectedCrypto}`);
-      };
-      
-      ws.onmessage = (event) => {
-        if (!active) return;
-        
-        try {
-          const ticker = JSON.parse(event.data);
-          const price = parseFloat(ticker.c); // 'c' = current/close price
-          
-          if (price && !isNaN(price)) {
-            setCurrentPrice(price);
-            setPriceData(prev => [...prev.slice(-29), { time: Date.now(), price }]);
-          }
-        } catch (error) {
-          console.error('WebSocket parse error:', error);
-        }
-      };
-      
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
-      
-      ws.onclose = () => {
-        if (active) {
-          console.log('WebSocket closed, reconnecting in 3s...');
-          setTimeout(connectWebSocket, 3000);
-        }
-      };
-    };
-
-    // Execute: Fetch immediately, then start WebSocket
+    // Fetch immediately
     fetchPrice();
-    setTimeout(() => {
-      if (active) connectWebSocket();
-    }, 500);
+    
+    // Then poll every 2 seconds
+    const interval = setInterval(fetchPrice, 2000);
 
-    // Cleanup
     return () => {
       active = false;
-      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
-        ws.close();
-      }
+      clearInterval(interval);
+      console.log('🛑 Stopped price feed for', selectedCrypto);
     };
   }, [selectedCrypto]);
 
@@ -272,8 +263,8 @@ const TossBox = () => {
 
   const formatPrice = (p) => {
     if (!p || p === 0) return '0.00';
-    if (p < 0.001) return p.toFixed(8);
-    if (p < 0.01) return p.toFixed(6);
+    if (p < 0.00001) return p.toFixed(8);
+    if (p < 0.001) return p.toFixed(6);
     if (p < 1) return p.toFixed(4);
     return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
@@ -340,22 +331,24 @@ const TossBox = () => {
       <div className="max-w-6xl mx-auto grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
           <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-            <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset • Live Prices via Binance</h3>
-            <div className="grid grid-cols-5 gap-2">
+            <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset • {CRYPTOS.length} Available • Live Binance Prices</h3>
+            <div className="grid grid-cols-6 gap-2 max-h-48 overflow-y-auto pr-2">
               {CRYPTOS.map(c => (
                 <button
                   key={c.symbol}
                   onClick={() => {
+                    console.log('🔄 Switching to', c.symbol);
                     setSelectedCrypto(c.symbol);
                     setPriceData([]);
                     setCurrentPrice(0);
                   }}
                   disabled={gameState === 'active'}
-                  className={`py-3 rounded-lg font-bold transition-all disabled:opacity-50 ${
+                  className={`py-2 px-1 rounded-lg font-bold text-xs transition-all disabled:opacity-50 ${
                     selectedCrypto === c.symbol
                       ? 'bg-purple-600 text-white ring-2 ring-purple-400'
                       : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                   }`}
+                  title={c.name}
                 >
                   {c.symbol}
                 </button>
@@ -399,7 +392,9 @@ const TossBox = () => {
               <div className="h-[250px] flex items-center justify-center">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
-                  <div className="text-gray-400">Loading {selectedCrypto}...</div>
+                  <div className="text-gray-400">
+                    {currentPrice === 0 ? `Fetching ${selectedCrypto} price...` : 'Building chart...'}
+                  </div>
                 </div>
               </div>
             )}
@@ -424,7 +419,7 @@ const TossBox = () => {
                     } disabled:opacity-50`}
                   >
                     <TrendingUp className="mx-auto mb-2" size={32} />
-                    PRICE UP
+                    UP
                   </button>
                   
                   <button
@@ -435,7 +430,7 @@ const TossBox = () => {
                     } disabled:opacity-50`}
                   >
                     <TrendingDown className="mx-auto mb-2" size={32} />
-                    PRICE DOWN
+                    DOWN
                   </button>
                 </div>
 
@@ -471,7 +466,7 @@ const TossBox = () => {
                   disabled={!prediction || gameState === 'active' || placingBet || stake > balance || currentPrice === 0}
                   className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 py-4 rounded-lg font-bold text-xl transition-all disabled:opacity-50"
                 >
-                  {placingBet ? 'Placing Bet...' : gameState === 'active' ? 'Round In Progress' : 'Place Bet'}
+                  {placingBet ? 'Placing Bet...' : gameState === 'active' ? 'Round In Progress' : currentPrice === 0 ? 'Loading Price...' : 'Place Bet'}
                 </button>
               </>
             )}
@@ -502,7 +497,7 @@ const TossBox = () => {
             <h3 className="text-lg font-bold mb-4">How It Works</h3>
             <ol className="space-y-2 text-sm text-gray-300">
               <li>1. Connect Solana wallet</li>
-              <li>2. Pick crypto asset</li>
+              <li>2. Pick from {CRYPTOS.length} assets</li>
               <li>3. Predict UP or DOWN</li>
               <li>4. Choose multiplier (1x-10x)</li>
               <li>5. Set your stake</li>
@@ -510,7 +505,7 @@ const TossBox = () => {
               <li>7. Winners split the pot!</li>
             </ol>
             <div className="mt-4 p-3 bg-purple-900/30 rounded border border-purple-700 text-xs">
-              5% platform fee • Peer-to-peer betting • Powered by Binance price feeds
+              5% platform fee • Peer-to-peer betting • Live Binance prices
             </div>
           </div>
         </div>
