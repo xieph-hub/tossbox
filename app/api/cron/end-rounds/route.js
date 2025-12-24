@@ -1,176 +1,201 @@
-import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
-import { sendPayout } from '@/lib/solana';
+import { NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { sendPayout } from "@/lib/solana";
+import { getPythSnapshot } from "@/lib/prices/getPythSnapshot";
 
-export async function GET(request) {
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
+function num(v: any) {
+  const n = typeof v === "string" ? Number(v) : v;
+  return Number.isFinite(n) ? n : 0;
+}
+
+export async function GET(request: Request) {
   try {
-    // Verify cron secret (Vercel cron authentication)
-    const authHeader = request.headers.get('authorization');
+    // Verify cron secret
+    const authHeader = request.headers.get("authorization");
     if (authHeader !== `Bearer ${process.env.CRON_SECRET}`) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    // Find rounds that should be ended (60+ seconds old and still active)
-    const sixtySecondsAgo = new Date(Date.now() - 60000).toISOString();
-    
-    const { data: roundsToEnd } = await supabase
-      .from('rounds')
-      .select('*')
-      .eq('status', 'active')
-      .lte('start_time', sixtySecondsAgo);
+    const sixtySecondsAgo = new Date(Date.now() - 60_000).toISOString();
+
+    const { data: roundsToEnd, error: roundsErr } = await supabaseAdmin
+      .from("rounds")
+      .select("*")
+      .eq("status", "active")
+      .lte("start_time", sixtySecondsAgo);
+
+    if (roundsErr) throw roundsErr;
 
     if (!roundsToEnd || roundsToEnd.length === 0) {
-      return NextResponse.json({ message: 'No rounds to end' });
+      return NextResponse.json({ message: "No rounds to end" });
     }
 
-    const results = [];
+    const results: any[] = [];
 
     for (const round of roundsToEnd) {
       try {
-        // Fetch end price from Binance
-        const binanceSymbol = `${round.crypto}USDT`;
-        const priceRes = await fetch(
-          `https://api.binance.com/api/v3/ticker/price?symbol=${binanceSymbol}`,
-          { cache: 'no-store' }
-        );
-        
-        if (!priceRes.ok) {
-          console.error(`Failed to fetch price for ${round.crypto}`);
-          results.push({ roundId: round.id, error: 'Price fetch failed' });
+        // 1) Acquire lock: flip active -> settling (single-writer)
+        const { data: lockedRows, error: lockErr } = await supabaseAdmin
+          .from("rounds")
+          .update({ status: "settling" })
+          .eq("id", round.id)
+          .eq("status", "active")
+          .select("id");
+
+        if (lockErr) throw lockErr;
+
+        // If no row updated, someone else is settling it already
+        if (!lockedRows || lockedRows.length === 0) {
+          results.push({ roundId: round.id, skipped: "already_settling_or_ended" });
           continue;
         }
 
-        const priceData = await priceRes.json();
-        const endPrice = parseFloat(priceData.price);
+        // 2) Canonical end snapshot from PYTH
+        const snap = await getPythSnapshot(round.crypto);
+        const endPrice = snap.price;
 
-        // Update round
-        await supabase
-          .from('rounds')
+        // 3) End round (store pyth metadata)
+        const { error: endErr } = await supabaseAdmin
+          .from("rounds")
           .update({
             end_price: endPrice,
             end_time: new Date().toISOString(),
-            status: 'ended'
+            end_publish_time: snap.publish_time,
+            end_conf: snap.conf,
+            end_source: snap.source,
+            settled_at: new Date().toISOString(),
+            status: "ended",
           })
-          .eq('id', round.id);
+          .eq("id", round.id);
 
-        // Get all bets for this round
-        const { data: bets } = await supabase
-          .from('bets')
-          .select('*')
-          .eq('round_id', round.id);
+        if (endErr) throw endErr;
+
+        // 4) Fetch bets
+        const { data: bets, error: betsErr } = await supabaseAdmin
+          .from("bets")
+          .select("*")
+          .eq("round_id", round.id);
+
+        if (betsErr) throw betsErr;
 
         if (!bets || bets.length === 0) {
-          results.push({ roundId: round.id, status: 'no_bets' });
+          results.push({ roundId: round.id, status: "ended_no_bets", endPrice });
           continue;
         }
 
-        const priceWentUp = endPrice > round.start_price;
-        const winners = bets.filter(bet => 
-          (bet.prediction === 'up' && priceWentUp) || 
-          (bet.prediction === 'down' && !priceWentUp)
+        const priceWentUp = endPrice > num(round.start_price);
+
+        const winners = bets.filter((b: any) =>
+          (b.prediction === "up" && priceWentUp) ||
+          (b.prediction === "down" && !priceWentUp)
+        );
+        const losers = bets.filter((b: any) => !winners.includes(b));
+
+        const totalLoserStakes = losers.reduce((s: number, b: any) => s + num(b.stake_amount), 0);
+        const totalWinnerWeight = winners.reduce(
+          (s: number, b: any) => s + num(b.stake_amount) * num(b.multiplier),
+          0
         );
 
-        const losers = bets.filter(bet => 
-          (bet.prediction === 'up' && !priceWentUp) || 
-          (bet.prediction === 'down' && priceWentUp)
-        );
-
-        // Calculate payouts
-        const totalLoserStakes = losers.reduce((sum, bet) => sum + parseFloat(bet.stake_amount), 0);
-        const totalWinnerWeight = winners.reduce((sum, bet) => sum + (parseFloat(bet.stake_amount) * bet.multiplier), 0);
-        
         const platformFee = totalLoserStakes * 0.05;
         const payoutPool = totalLoserStakes - platformFee;
 
-        // Process payouts
+        // 5) Pay winners (idempotency: only pay pending bets)
         for (const winner of winners) {
-          const weight = parseFloat(winner.stake_amount) * winner.multiplier;
+          // Skip if already processed
+          if (winner.status === "won") continue;
+
+          const stake = num(winner.stake_amount);
+          const weight = stake * num(winner.multiplier);
           const winShare = totalWinnerWeight > 0 ? (weight / totalWinnerWeight) * payoutPool : 0;
-          const totalPayout = winShare + parseFloat(winner.stake_amount);
+          const totalPayout = winShare + stake;
 
           try {
             const txSignature = await sendPayout(winner.wallet_address, totalPayout);
 
-            await supabase
-              .from('bets')
-              .update({
-                status: 'won',
-                actual_win: winShare
-              })
-              .eq('id', winner.id);
+            await supabaseAdmin
+              .from("bets")
+              .update({ status: "won", actual_win: winShare })
+              .eq("id", winner.id);
 
-            await supabase.from('transactions').insert({
+            await supabaseAdmin.from("transactions").insert({
               user_id: winner.user_id,
               wallet_address: winner.wallet_address,
-              type: 'payout',
+              type: "payout",
               amount: totalPayout,
               tx_signature: txSignature,
-              status: 'confirmed'
+              status: "confirmed",
             });
 
-            // Update user stats
-            const { data: user } = await supabase
-              .from('users')
-              .select('*')
-              .eq('id', winner.user_id)
-              .single();
+            // Update user stats (safe increments)
+            const { data: user } = await supabaseAdmin
+              .from("users")
+              .select("total_won, win_streak")
+              .eq("id", winner.user_id)
+              .maybeSingle();
 
             if (user) {
-              await supabase
-                .from('users')
+              await supabaseAdmin
+                .from("users")
                 .update({
-                  total_won: (user.total_won || 0) + winShare,
-                  win_streak: (user.win_streak || 0) + 1
+                  total_won: num(user.total_won) + winShare,
+                  win_streak: num(user.win_streak) + 1,
                 })
-                .eq('id', winner.user_id);
+                .eq("id", winner.user_id);
             }
-
-          } catch (error) {
-            console.error(`Payout failed for ${winner.wallet_address}:`, error);
+          } catch (e) {
+            console.error(`Payout failed for ${winner.wallet_address}:`, e);
+            // Consider setting bet status to 'payout_failed' to retry later
           }
         }
 
-        // Mark losers
+        // 6) Mark losers
         for (const loser of losers) {
-          await supabase
-            .from('bets')
-            .update({ status: 'lost' })
-            .eq('id', loser.id);
+          if (loser.status === "lost") continue;
 
-          await supabase
-            .from('users')
-            .update({ win_streak: 0 })
-            .eq('id', loser.user_id);
+          await supabaseAdmin.from("bets").update({ status: "lost" }).eq("id", loser.id);
+          await supabaseAdmin.from("users").update({ win_streak: 0 }).eq("id", loser.user_id);
         }
 
         results.push({
           roundId: round.id,
           crypto: round.crypto,
-          startPrice: round.start_price,
+          startPrice: num(round.start_price),
           endPrice,
-          direction: priceWentUp ? 'up' : 'down',
+          direction: priceWentUp ? "up" : "down",
           winners: winners.length,
           losers: losers.length,
           payoutPool,
-          platformFee
+          platformFee,
+          endPublishTime: snap.publish_time,
+          endConf: snap.conf ?? null,
+          source: "pyth",
         });
+      } catch (e: any) {
+        console.error(`Failed to end round ${round.id}:`, e?.message || e);
+        // Try to release lock if it failed mid-way (optional)
+        await supabaseAdmin
+          .from("rounds")
+          .update({ status: "active" })
+          .eq("id", round.id)
+          .eq("status", "settling");
 
-      } catch (error) {
-        console.error(`Failed to end round ${round.id}:`, error);
-        results.push({ roundId: round.id, error: error.message });
+        results.push({ roundId: round.id, error: e?.message || "unknown" });
       }
     }
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       roundsProcessed: results.length,
-      results 
+      results,
     });
-
-  } catch (error) {
-    console.error('Cron job error:', error);
+  } catch (error: any) {
+    console.error("Cron job error:", error?.message || error);
     return NextResponse.json(
-      { error: 'Cron job failed', details: error.message },
+      { error: "Cron job failed", details: error?.message || "unknown" },
       { status: 500 }
     );
   }
