@@ -8,7 +8,7 @@ import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adap
 require('@solana/wallet-adapter-react-ui/styles.css');
 
 export default function WalletContextProvider({ children }) {
-  const endpoint = process.env.NEXT_PUBLIC_SOLANA_RPC_URL;
+  const endpoint = process.env.NEXT_PUBLIC_SOLANA_RPC_URL || 'https://api.mainnet-beta.solana.com';
 
   const wallets = useMemo(
     () => [
