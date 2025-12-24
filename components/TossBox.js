@@ -8,11 +8,23 @@ import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
 import { TrendingUp, TrendingDown, Trophy, Users, DollarSign, Flame } from 'lucide-react';
 import Link from 'next/link';
 
-// Crypto options
+// Crypto options - EXPANDED LIST
 const CRYPTOS = [
-  { symbol: 'BTC', name: 'Bitcoin' },
-  { symbol: 'ETH', name: 'Ethereum' },
-  { symbol: 'SOL', name: 'Solana' }
+  { symbol: 'BTC', name: 'Bitcoin', id: 'bitcoin' },
+  { symbol: 'ETH', name: 'Ethereum', id: 'ethereum' },
+  { symbol: 'SOL', name: 'Solana', id: 'solana' },
+  { symbol: 'BNB', name: 'BNB', id: 'binancecoin' },
+  { symbol: 'XRP', name: 'Ripple', id: 'ripple' },
+  { symbol: 'ADA', name: 'Cardano', id: 'cardano' },
+  { symbol: 'DOGE', name: 'Dogecoin', id: 'dogecoin' },
+  { symbol: 'MATIC', name: 'Polygon', id: 'matic-network' },
+  { symbol: 'DOT', name: 'Polkadot', id: 'polkadot' },
+  { symbol: 'AVAX', name: 'Avalanche', id: 'avalanche-2' },
+  { symbol: 'SHIB', name: 'Shiba Inu', id: 'shiba-inu' },
+  { symbol: 'LINK', name: 'Chainlink', id: 'chainlink' },
+  { symbol: 'UNI', name: 'Uniswap', id: 'uniswap' },
+  { symbol: 'LTC', name: 'Litecoin', id: 'litecoin' },
+  { symbol: 'PEPE', name: 'Pepe', id: 'pepe' }
 ];
 
 const TossBox = () => {
@@ -39,115 +51,161 @@ const TossBox = () => {
   
   // Loading states
   const [placingBet, setPlacingBet] = useState(false);
+  const [priceLoading, setPriceLoading] = useState(true);
 
-  // Real-time price updates - Hybrid approach (WebSocket + REST fallback)
+  // Ultra-fast price feed - Production ready with WebSocket + REST fallback
   useEffect(() => {
-    const symbol = selectedCrypto.toLowerCase();
+    const crypto = CRYPTOS.find(c => c.symbol === selectedCrypto);
+    if (!crypto) return;
+
     let ws;
-    let reconnectAttempts = 0;
-    const maxReconnectAttempts = 3;
-    let isSubscribed = true;
+    let isActive = true;
+    let restFallback;
+    let hasReceivedPrice = false;
 
-    const connectWebSocket = () => {
-      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}usdt@trade`);
+    setPriceLoading(true);
 
-      ws.onopen = () => {
-        console.log('✅ WebSocket connected for', selectedCrypto);
-        reconnectAttempts = 0;
-      };
-
-      ws.onmessage = (event) => {
-        if (!isSubscribed) return;
-        const data = JSON.parse(event.data);
-        const price = parseFloat(data.p);
-        
-        setCurrentPrice(price);
-        setPriceData(prev => {
-          const newData = [...prev, { time: Date.now(), price }];
-          return newData.slice(-30);
-        });
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-      };
-
-      ws.onclose = () => {
-        if (!isSubscribed) return;
-        console.log('WebSocket closed for', selectedCrypto);
-        // Try to reconnect
-        if (reconnectAttempts < maxReconnectAttempts) {
-          reconnectAttempts++;
-          console.log(`Reconnecting... attempt ${reconnectAttempts}`);
-          setTimeout(connectWebSocket, 2000);
-        } else {
-          console.log('Falling back to REST API polling');
-          startPolling();
-        }
-      };
-    };
-
-    let pollingInterval;
-    const startPolling = () => {
-      const fetchPrice = async () => {
-        if (!isSubscribed) return;
-        try {
-          const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol.toUpperCase()}USDT`);
-          const data = await response.json();
-          const price = parseFloat(data.price);
-          
-          setCurrentPrice(price);
-          setPriceData(prev => {
-            const newData = [...prev, { time: Date.now(), price }];
-            return newData.slice(-30);
-          });
-        } catch (error) {
-          console.error('Failed to fetch price:', error);
-        }
-      };
-
-      fetchPrice(); // Immediate fetch
-      pollingInterval = setInterval(fetchPrice, 2000);
-    };
-
-    // Fetch initial price immediately
+    // Get initial price immediately via REST (CoinGecko)
     const fetchInitialPrice = async () => {
       try {
-        const response = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${symbol.toUpperCase()}USDT`);
+        const response = await fetch(
+          `https://api.coingecko.com/api/v3/simple/price?ids=${crypto.id}&vs_currencies=usd`,
+          { cache: 'no-store' }
+        );
         const data = await response.json();
-        const price = parseFloat(data.price);
-        setCurrentPrice(price);
-        setPriceData([{ time: Date.now(), price }]);
+        const price = data[crypto.id]?.usd;
+        
+        if (price && isActive) {
+          setCurrentPrice(price);
+          setPriceData([{ time: Date.now(), price }]);
+          setPriceLoading(false);
+          hasReceivedPrice = true;
+          console.log(`💰 Initial price loaded: $${price}`);
+        }
       } catch (error) {
-        console.error('Failed to fetch initial price:', error);
+        console.error('Initial price fetch error:', error);
+        // Try Binance as fallback
+        tryBinanceInitial();
       }
     };
 
-    fetchInitialPrice();
-
-    // Start WebSocket connection after a brief delay
-    setTimeout(() => {
-      if (isSubscribed) {
-        connectWebSocket();
+    const tryBinanceInitial = async () => {
+      try {
+        const symbol = crypto.symbol.toUpperCase();
+        const response = await fetch(
+          `https://api.binance.com/api/v3/ticker/price?symbol=${symbol}USDT`
+        );
+        const data = await response.json();
+        const price = parseFloat(data.price);
+        
+        if (price && isActive) {
+          setCurrentPrice(price);
+          setPriceData([{ time: Date.now(), price }]);
+          setPriceLoading(false);
+          hasReceivedPrice = true;
+        }
+      } catch (error) {
+        console.error('Binance initial fetch failed:', error);
+        setPriceLoading(false);
       }
+    };
+
+    // WebSocket connection for real-time updates (fastest)
+    const connectWebSocket = () => {
+      const symbol = crypto.symbol.toLowerCase();
+      ws = new WebSocket(`wss://stream.binance.com:9443/ws/${symbol}usdt@aggTrade`);
+      
+      ws.onopen = () => {
+        console.log(`🟢 Live feed connected: ${crypto.symbol}`);
+      };
+      
+      ws.onmessage = (event) => {
+        if (!isActive) return;
+        try {
+          const data = JSON.parse(event.data);
+          const price = parseFloat(data.p);
+          
+          if (price) {
+            setCurrentPrice(price);
+            setPriceData(prev => {
+              const newData = [...prev, { time: Date.now(), price }];
+              return newData.slice(-30);
+            });
+            if (!hasReceivedPrice) {
+              setPriceLoading(false);
+              hasReceivedPrice = true;
+            }
+          }
+        } catch (error) {
+          console.error('WebSocket parse error:', error);
+        }
+      };
+      
+      ws.onerror = (error) => {
+        console.log('WebSocket error, using REST fallback');
+        startRESTFallback();
+      };
+      
+      ws.onclose = () => {
+        if (isActive) {
+          console.log('WebSocket closed, reconnecting...');
+          setTimeout(connectWebSocket, 2000);
+        }
+      };
+    };
+
+    // REST API fallback (if WebSocket fails)
+    const startRESTFallback = () => {
+      const fetchPrice = async () => {
+        if (!isActive) return;
+        try {
+          const response = await fetch(
+            `https://api.coingecko.com/api/v3/simple/price?ids=${crypto.id}&vs_currencies=usd`,
+            { cache: 'no-store' }
+          );
+          const data = await response.json();
+          const price = data[crypto.id]?.usd;
+          
+          if (price) {
+            setCurrentPrice(price);
+            setPriceData(prev => {
+              const newData = [...prev, { time: Date.now(), price }];
+              return newData.slice(-30);
+            });
+            if (!hasReceivedPrice) {
+              setPriceLoading(false);
+              hasReceivedPrice = true;
+            }
+          }
+        } catch (error) {
+          console.error('REST fallback error:', error);
+        }
+      };
+
+      fetchPrice();
+      restFallback = setInterval(fetchPrice, 3000);
+    };
+
+    // Execute: Fetch initial price, then connect WebSocket
+    fetchInitialPrice();
+    
+    setTimeout(() => {
+      if (isActive) connectWebSocket();
     }, 500);
 
-    // Cleanup
     return () => {
-      isSubscribed = false;
-      if (ws) {
+      isActive = false;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
         ws.close();
       }
-      if (pollingInterval) {
-        clearInterval(pollingInterval);
-      }
+      if (restFallback) clearInterval(restFallback);
     };
   }, [selectedCrypto]);
 
   // Fetch game state periodically
   useEffect(() => {
     fetchGameState();
-    const interval = setInterval(fetchGameState, 5000); // Every 5 seconds
+    const interval = setInterval(fetchGameState, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -177,7 +235,6 @@ const TossBox = () => {
       setPlayerCount(data.playerCount || 0);
       setRecentWinners(data.recentWinners || []);
       
-      // If there's an active round, update countdown
       if (data.activeRound && data.activeRound.status === 'active') {
         const startTime = new Date(data.activeRound.start_time).getTime();
         const elapsed = Math.floor((Date.now() - startTime) / 1000);
@@ -199,7 +256,6 @@ const TossBox = () => {
       const bal = await connection.getBalance(publicKey);
       setBalance(bal / LAMPORTS_PER_SOL);
 
-      // Fetch user stats
       const response = await fetch(`/api/profile?wallet=${publicKey.toString()}`);
       const data = await response.json();
       setUserStreak(data.profile?.win_streak || 0);
@@ -214,7 +270,6 @@ const TossBox = () => {
     setPlacingBet(true);
     
     try {
-      // Create transaction to send SOL to treasury
       const treasuryPubkey = new PublicKey(process.env.NEXT_PUBLIC_TREASURY_WALLET);
       const transaction = new Transaction().add(
         SystemProgram.transfer({
@@ -224,15 +279,12 @@ const TossBox = () => {
         })
       );
 
-      // Send transaction
       const signature = await sendTransaction(transaction, connection);
       console.log('Transaction sent:', signature);
       
-      // Wait for confirmation
       await connection.confirmTransaction(signature, 'confirmed');
       console.log('Transaction confirmed:', signature);
 
-      // Submit bet to backend
       const response = await fetch('/api/place-bet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -254,7 +306,6 @@ const TossBox = () => {
         setCountdown(60);
         setBalance(prev => prev - stake);
         
-        // Refresh game state
         await fetchGameState();
         
         alert('Bet placed successfully! Good luck! 🎲');
@@ -375,30 +426,46 @@ const TossBox = () => {
       <div className="max-w-6xl mx-auto grid lg:grid-cols-3 gap-6">
         {/* Main Game Area */}
         <div className="lg:col-span-2 space-y-4">
-          {/* Crypto Selector */}
-          <div className="flex gap-2">
-            {CRYPTOS.map(crypto => (
-              <button
-                key={crypto.symbol}
-                onClick={() => setSelectedCrypto(crypto.symbol)}
-                disabled={gameState === 'active'}
-                className={`flex-1 py-3 rounded-lg font-bold transition-all disabled:opacity-50 ${
-                  selectedCrypto === crypto.symbol
-                    ? 'bg-purple-600 text-white'
-                    : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
-                }`}
-              >
-                {crypto.symbol}
-              </button>
-            ))}
+          {/* Crypto Selector - Scrollable Grid */}
+          <div className="bg-gray-800/50 backdrop-blur rounded-lg p-4 border border-gray-700">
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-sm font-bold text-gray-400">Select Asset</h3>
+              <div className="text-xs text-gray-500">{CRYPTOS.length} available</div>
+            </div>
+            <div className="grid grid-cols-5 gap-2 max-h-32 overflow-y-auto pr-2" style={{ scrollbarWidth: 'thin' }}>
+              {CRYPTOS.map(crypto => (
+                <button
+                  key={crypto.symbol}
+                  onClick={() => setSelectedCrypto(crypto.symbol)}
+                  disabled={gameState === 'active'}
+                  className={`py-2 px-3 rounded-lg font-bold text-sm transition-all disabled:opacity-50 ${
+                    selectedCrypto === crypto.symbol
+                      ? 'bg-purple-600 text-white ring-2 ring-purple-400'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                  title={crypto.name}
+                >
+                  {crypto.symbol}
+                </button>
+              ))}
+            </div>
           </div>
 
           {/* Price Chart */}
           <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
             <div className="flex justify-between items-center mb-4">
               <div>
-                <div className="text-3xl font-bold">${currentPrice.toFixed(2)}</div>
-                <div className="text-sm text-gray-400">{selectedCrypto}/USD</div>
+                {priceLoading ? (
+                  <>
+                    <div className="h-9 w-32 bg-gray-700 animate-pulse rounded mb-1"></div>
+                    <div className="text-sm text-gray-400">{selectedCrypto}/USD</div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-3xl font-bold">${currentPrice.toFixed(2)}</div>
+                    <div className="text-sm text-gray-400">{selectedCrypto}/USD</div>
+                  </>
+                )}
               </div>
               
               {gameState === 'active' && (
@@ -408,7 +475,7 @@ const TossBox = () => {
                 </div>
               )}
               
-              {startPrice && currentPrice > 0 && (
+              {startPrice && currentPrice > 0 && !priceLoading && (
                 <div className={`text-right ${currentPrice >= startPrice ? 'text-green-400' : 'text-red-400'}`}>
                   <div className="text-2xl font-bold">
                     {currentPrice >= startPrice ? '+' : ''}{(currentPrice - startPrice).toFixed(2)}
@@ -420,7 +487,14 @@ const TossBox = () => {
               )}
             </div>
 
-            {priceData.length > 0 ? (
+            {priceLoading ? (
+              <div className="h-[250px] flex items-center justify-center">
+                <div className="text-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
+                  <div className="text-gray-400">Loading price data...</div>
+                </div>
+              </div>
+            ) : priceData.length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
                 <LineChart data={priceData}>
                   <XAxis dataKey="time" hide />
@@ -436,7 +510,7 @@ const TossBox = () => {
               </ResponsiveContainer>
             ) : (
               <div className="h-[250px] flex items-center justify-center text-gray-500">
-                Loading live price...
+                No price data available
               </div>
             )}
           </div>
@@ -517,7 +591,7 @@ const TossBox = () => {
                 {/* Place Bet Button */}
                 <button
                   onClick={placeBet}
-                  disabled={!prediction || !publicKey || gameState === 'active' || placingBet || stake > balance}
+                  disabled={!prediction || !publicKey || gameState === 'active' || placingBet || stake > balance || priceLoading}
                   className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 py-4 rounded-lg font-bold text-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {placingBet ? 'Placing Bet...' : gameState === 'active' ? 'Round In Progress...' : 'Place Bet'}
@@ -560,7 +634,7 @@ const TossBox = () => {
             <h3 className="text-lg font-bold mb-4">How to Play</h3>
             <ol className="space-y-2 text-sm text-gray-300">
               <li>1. Connect your Solana wallet</li>
-              <li>2. Choose a crypto pair (BTC/ETH/SOL)</li>
+              <li>2. Choose from {CRYPTOS.length} crypto assets</li>
               <li>3. Predict if price goes UP or DOWN</li>
               <li>4. Select your confidence multiplier</li>
               <li>5. Set your stake amount</li>
