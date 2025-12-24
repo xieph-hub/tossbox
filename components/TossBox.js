@@ -1,12 +1,25 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
-import { TrendingUp, TrendingDown, Wallet, Trophy, Users, DollarSign } from 'lucide-react';
+'use client';
 
-// Simulated crypto price data (replace with real WebSocket in production)
-const CRYPTOS = ['BTC', 'ETH', 'SOL'];
+import React, { useState, useEffect } from 'react';
+import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
+import { LineChart, Line, XAxis, YAxis, ResponsiveContainer } from 'recharts';
+import { TrendingUp, TrendingDown, Trophy, Users, DollarSign, Flame } from 'lucide-react';
+import Link from 'next/link';
+
+// Crypto options
+const CRYPTOS = [
+  { symbol: 'BTC', name: 'Bitcoin' },
+  { symbol: 'ETH', name: 'Ethereum' },
+  { symbol: 'SOL', name: 'Solana' }
+];
 
 const TossBox = () => {
-  const [wallet, setWallet] = useState(null);
+  const { publicKey, sendTransaction } = useWallet();
+  const { connection } = useConnection();
+  
+  // Game state
   const [selectedCrypto, setSelectedCrypto] = useState('BTC');
   const [prediction, setPrediction] = useState(null);
   const [multiplier, setMultiplier] = useState(1);
@@ -15,14 +28,17 @@ const TossBox = () => {
   const [countdown, setCountdown] = useState(60);
   const [priceData, setPriceData] = useState([]);
   const [startPrice, setStartPrice] = useState(null);
-  const [currentPrice, setCurrentPrice] = useState(43250);
-  const [totalPot, setTotalPot] = useState(12.5);
-  const [playerCount, setPlayerCount] = useState(23);
-  const [balance, setBalance] = useState(10.5);
-  const [recentWinners, setRecentWinners] = useState([
-    { addr: '7xK9...mN2p', amount: 2.5, multiplier: 5 },
-    { addr: '9Bv3...kL8q', amount: 1.2, multiplier: 2 },
-  ]);
+  const [currentPrice, setCurrentPrice] = useState(0);
+  
+  // Stats
+  const [totalPot, setTotalPot] = useState(0);
+  const [playerCount, setPlayerCount] = useState(0);
+  const [balance, setBalance] = useState(0);
+  const [userStreak, setUserStreak] = useState(0);
+  const [recentWinners, setRecentWinners] = useState([]);
+  
+  // Loading states
+  const [placingBet, setPlacingBet] = useState(false);
 
   // Real-time WebSocket price updates
   useEffect(() => {
@@ -48,57 +64,150 @@ const TossBox = () => {
     };
   }, [selectedCrypto]);
 
+  // Fetch game state periodically
+  useEffect(() => {
+    fetchGameState();
+    const interval = setInterval(fetchGameState, 5000); // Every 5 seconds
+    return () => clearInterval(interval);
+  }, []);
+
+  // Fetch user balance when wallet connects
+  useEffect(() => {
+    if (publicKey) {
+      fetchUserBalance();
+    }
+  }, [publicKey, connection]);
+
   // Game countdown
   useEffect(() => {
     if (gameState === 'active' && countdown > 0) {
       const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
       return () => clearTimeout(timer);
-    } else if (countdown === 0) {
+    } else if (countdown === 0 && gameState === 'active') {
       endRound();
     }
   }, [gameState, countdown]);
 
-  const connectWallet = () => {
-    setWallet('7xK9mN2pQwRtLvBc3sD8fGhJ4kM6nP9qX1yZ5aE2bF7c');
-    // In production: Use Solana wallet adapter
+  const fetchGameState = async () => {
+    try {
+      const response = await fetch('/api/get-game-state');
+      const data = await response.json();
+      
+      setTotalPot(data.totalPot || 0);
+      setPlayerCount(data.playerCount || 0);
+      setRecentWinners(data.recentWinners || []);
+      
+      // If there's an active round, update countdown
+      if (data.activeRound && data.activeRound.status === 'active') {
+        const startTime = new Date(data.activeRound.start_time).getTime();
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const remaining = Math.max(0, 60 - elapsed);
+        
+        if (remaining > 0) {
+          setCountdown(remaining);
+          setGameState('active');
+          setStartPrice(parseFloat(data.activeRound.start_price));
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch game state:', error);
+    }
   };
 
-  const placeBet = () => {
-    if (!prediction || !wallet) return;
+  const fetchUserBalance = async () => {
+    try {
+      const bal = await connection.getBalance(publicKey);
+      setBalance(bal / LAMPORTS_PER_SOL);
+
+      // Fetch user stats
+      const response = await fetch(`/api/profile?wallet=${publicKey.toString()}`);
+      const data = await response.json();
+      setUserStreak(data.profile?.win_streak || 0);
+    } catch (error) {
+      console.error('Failed to fetch balance:', error);
+    }
+  };
+
+  const placeBet = async () => {
+    if (!prediction || !publicKey || placingBet) return;
     
-    setGameState('active');
-    setStartPrice(currentPrice);
-    setCountdown(60);
-    setTotalPot(prev => prev + stake);
-    setBalance(prev => prev - stake);
+    setPlacingBet(true);
     
-    // In production: Send transaction to treasury wallet
-    console.log('Bet placed:', { prediction, multiplier, stake });
+    try {
+      // Create transaction to send SOL to treasury
+      const treasuryPubkey = new PublicKey(process.env.NEXT_PUBLIC_TREASURY_WALLET);
+      const transaction = new Transaction().add(
+        SystemProgram.transfer({
+          fromPubkey: publicKey,
+          toPubkey: treasuryPubkey,
+          lamports: Math.floor(stake * LAMPORTS_PER_SOL),
+        })
+      );
+
+      // Send transaction
+      const signature = await sendTransaction(transaction, connection);
+      console.log('Transaction sent:', signature);
+      
+      // Wait for confirmation
+      await connection.confirmTransaction(signature, 'confirmed');
+      console.log('Transaction confirmed:', signature);
+
+      // Submit bet to backend
+      const response = await fetch('/api/place-bet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          walletAddress: publicKey.toString(),
+          prediction,
+          multiplier,
+          stakeAmount: stake,
+          txSignature: signature,
+          crypto: selectedCrypto
+        })
+      });
+
+      const result = await response.json();
+      
+      if (result.success) {
+        setGameState('active');
+        setStartPrice(currentPrice);
+        setCountdown(60);
+        setBalance(prev => prev - stake);
+        
+        // Refresh game state
+        await fetchGameState();
+        
+        alert('Bet placed successfully! Good luck! 🎲');
+      } else {
+        alert('Failed to place bet: ' + (result.error || 'Unknown error'));
+      }
+      
+    } catch (error) {
+      console.error('Bet placement error:', error);
+      alert('Failed to place bet. Please try again. Error: ' + error.message);
+    } finally {
+      setPlacingBet(false);
+    }
   };
 
   const endRound = () => {
-    const priceChange = currentPrice - startPrice;
-    const won = (prediction === 'up' && priceChange > 0) || (prediction === 'down' && priceChange < 0);
-    
-    if (won) {
-      const payout = stake * multiplier * 0.95; // 5% fee
-      setBalance(prev => prev + payout + stake);
-      setRecentWinners(prev => [{ addr: wallet.slice(0, 4) + '...' + wallet.slice(-4), amount: payout, multiplier }, ...prev.slice(0, 4)]);
-    }
-    
     setGameState('ended');
     
     setTimeout(() => {
       setGameState('waiting');
       setPrediction(null);
       setStartPrice(null);
+      setCountdown(60);
+      fetchGameState();
+      if (publicKey) fetchUserBalance();
     }, 3000);
   };
 
   const MultiplierButton = ({ value }) => (
     <button
       onClick={() => setMultiplier(value)}
-      className={`px-4 py-2 rounded-lg font-bold transition-all ${
+      disabled={gameState === 'active'}
+      className={`px-4 py-2 rounded-lg font-bold transition-all disabled:opacity-50 ${
         multiplier === value
           ? 'bg-purple-600 text-white scale-105'
           : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
@@ -120,21 +229,36 @@ const TossBox = () => {
             <p className="text-gray-400 text-sm">Predict. Win. Repeat.</p>
           </div>
           
-          {!wallet ? (
-            <button
-              onClick={connectWallet}
-              className="flex items-center gap-2 bg-purple-600 hover:bg-purple-700 px-6 py-3 rounded-lg font-bold transition-all"
-            >
-              <Wallet size={20} />
-              Connect Wallet
-            </button>
-          ) : (
-            <div className="text-right">
-              <div className="text-sm text-gray-400">Balance</div>
-              <div className="text-2xl font-bold">{balance.toFixed(2)} SOL</div>
-              <div className="text-xs text-gray-500">{wallet.slice(0, 4)}...{wallet.slice(-4)}</div>
-            </div>
-          )}
+          <div className="flex items-center gap-4">
+            {publicKey && (
+              <div className="flex gap-2">
+                <Link 
+                  href="/profile"
+                  className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold transition-all"
+                >
+                  Profile
+                </Link>
+                <Link 
+                  href="/leaderboard"
+                  className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold transition-all"
+                >
+                  Leaderboard
+                </Link>
+              </div>
+            )}
+            
+            {!publicKey ? (
+              <WalletMultiButton className="!bg-purple-600 hover:!bg-purple-700 !px-6 !py-3 !rounded-lg !font-bold" />
+            ) : (
+              <div className="text-right">
+                <div className="text-sm text-gray-400">Balance</div>
+                <div className="text-2xl font-bold">{balance.toFixed(3)} SOL</div>
+                <div className="text-xs text-gray-500">
+                  {publicKey.toString().slice(0, 4)}...{publicKey.toString().slice(-4)}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -161,7 +285,10 @@ const TossBox = () => {
             <Trophy size={16} />
             <span className="text-sm">Your Streak</span>
           </div>
-          <div className="text-2xl font-bold text-yellow-400">3 🔥</div>
+          <div className="text-2xl font-bold text-yellow-400 flex items-center gap-1">
+            {userStreak}
+            {userStreak > 0 && <Flame size={20} className="text-orange-400" />}
+          </div>
         </div>
       </div>
 
@@ -172,15 +299,16 @@ const TossBox = () => {
           <div className="flex gap-2">
             {CRYPTOS.map(crypto => (
               <button
-                key={crypto}
-                onClick={() => setSelectedCrypto(crypto)}
-                className={`flex-1 py-3 rounded-lg font-bold transition-all ${
-                  selectedCrypto === crypto
+                key={crypto.symbol}
+                onClick={() => setSelectedCrypto(crypto.symbol)}
+                disabled={gameState === 'active'}
+                className={`flex-1 py-3 rounded-lg font-bold transition-all disabled:opacity-50 ${
+                  selectedCrypto === crypto.symbol
                     ? 'bg-purple-600 text-white'
                     : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
                 }`}
               >
-                {crypto}
+                {crypto.symbol}
               </button>
             ))}
           </div>
@@ -200,7 +328,7 @@ const TossBox = () => {
                 </div>
               )}
               
-              {startPrice && (
+              {startPrice && currentPrice > 0 && (
                 <div className={`text-right ${currentPrice >= startPrice ? 'text-green-400' : 'text-red-400'}`}>
                   <div className="text-2xl font-bold">
                     {currentPrice >= startPrice ? '+' : ''}{(currentPrice - startPrice).toFixed(2)}
@@ -212,90 +340,110 @@ const TossBox = () => {
               )}
             </div>
 
-            <ResponsiveContainer width="100%" height={250}>
-              <LineChart data={priceData}>
-                <XAxis dataKey="time" hide />
-                <YAxis domain={['dataMin - 50', 'dataMax + 50']} hide />
-                <Line 
-                  type="monotone" 
-                  dataKey="price" 
-                  stroke="#a855f7" 
-                  strokeWidth={3}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+            {priceData.length > 0 ? (
+              <ResponsiveContainer width="100%" height={250}>
+                <LineChart data={priceData}>
+                  <XAxis dataKey="time" hide />
+                  <YAxis domain={['dataMin - 50', 'dataMax + 50']} hide />
+                  <Line 
+                    type="monotone" 
+                    dataKey="price" 
+                    stroke="#a855f7" 
+                    strokeWidth={3}
+                    dot={false}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            ) : (
+              <div className="h-[250px] flex items-center justify-center text-gray-500">
+                Connecting to live price feed...
+              </div>
+            )}
           </div>
 
           {/* Betting Controls */}
           <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
             <h3 className="text-lg font-bold mb-4">Place Your Bet</h3>
             
-            {/* Prediction Buttons */}
-            <div className="grid grid-cols-2 gap-4 mb-6">
-              <button
-                onClick={() => setPrediction('up')}
-                disabled={gameState === 'active'}
-                className={`py-6 rounded-lg font-bold text-xl transition-all ${
-                  prediction === 'up'
-                    ? 'bg-green-600 text-white scale-105'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                } disabled:opacity-50 disabled:cursor-not-allowed`}
-              >
-                <TrendingUp className="mx-auto mb-2" size={32} />
-                PRICE UP
-              </button>
-              
-              <button
-                onClick={() => setPrediction('down')}
-                disabled={gameState === 'active'}
-                className={`py-6 rounded-lg font-bold text-xl transition-all ${
-                  prediction === 'down'
-                    ? 'bg-red-600 text-white scale-105'
-                    : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                } disabled:opacity-50 disabled:cursor-not-allowed`}
-              >
-                <TrendingDown className="mx-auto mb-2" size={32} />
-                PRICE DOWN
-              </button>
-            </div>
-
-            {/* Multiplier */}
-            <div className="mb-6">
-              <label className="block text-sm text-gray-400 mb-2">Confidence Multiplier</label>
-              <div className="flex gap-2">
-                <MultiplierButton value={1} />
-                <MultiplierButton value={2} />
-                <MultiplierButton value={5} />
-                <MultiplierButton value={10} />
+            {!publicKey ? (
+              <div className="text-center py-8">
+                <p className="text-gray-400 mb-4">Connect your wallet to start playing</p>
+                <WalletMultiButton className="!bg-purple-600 hover:!bg-purple-700 !px-6 !py-3 !rounded-lg !font-bold" />
               </div>
-            </div>
+            ) : (
+              <>
+                {/* Prediction Buttons */}
+                <div className="grid grid-cols-2 gap-4 mb-6">
+                  <button
+                    onClick={() => setPrediction('up')}
+                    disabled={gameState === 'active'}
+                    className={`py-6 rounded-lg font-bold text-xl transition-all ${
+                      prediction === 'up'
+                        ? 'bg-green-600 text-white scale-105'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    <TrendingUp className="mx-auto mb-2" size={32} />
+                    PRICE UP
+                  </button>
+                  
+                  <button
+                    onClick={() => setPrediction('down')}
+                    disabled={gameState === 'active'}
+                    className={`py-6 rounded-lg font-bold text-xl transition-all ${
+                      prediction === 'down'
+                        ? 'bg-red-600 text-white scale-105'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                    } disabled:opacity-50 disabled:cursor-not-allowed`}
+                  >
+                    <TrendingDown className="mx-auto mb-2" size={32} />
+                    PRICE DOWN
+                  </button>
+                </div>
 
-            {/* Stake Amount */}
-            <div className="mb-6">
-              <label className="block text-sm text-gray-400 mb-2">Stake Amount (SOL)</label>
-              <input
-                type="number"
-                value={stake}
-                onChange={(e) => setStake(parseFloat(e.target.value) || 0)}
-                step="0.1"
-                min="0.1"
-                disabled={gameState === 'active'}
-                className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white font-bold text-xl disabled:opacity-50"
-              />
-              <div className="text-sm text-gray-400 mt-2">
-                Potential Win: <span className="text-green-400 font-bold">{(stake * multiplier * 0.95).toFixed(2)} SOL</span>
-              </div>
-            </div>
+                {/* Multiplier */}
+                <div className="mb-6">
+                  <label className="block text-sm text-gray-400 mb-2">Confidence Multiplier</label>
+                  <div className="flex gap-2">
+                    <MultiplierButton value={1} />
+                    <MultiplierButton value={2} />
+                    <MultiplierButton value={5} />
+                    <MultiplierButton value={10} />
+                  </div>
+                  <p className="text-xs text-gray-500 mt-2">
+                    Higher multipliers = bigger potential wins, but winners split the pot
+                  </p>
+                </div>
 
-            {/* Place Bet Button */}
-            <button
-              onClick={placeBet}
-              disabled={!prediction || !wallet || gameState === 'active'}
-              className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 py-4 rounded-lg font-bold text-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {gameState === 'active' ? 'Round In Progress...' : 'Place Bet'}
-            </button>
+                {/* Stake Amount */}
+                <div className="mb-6">
+                  <label className="block text-sm text-gray-400 mb-2">Stake Amount (SOL)</label>
+                  <input
+                    type="number"
+                    value={stake}
+                    onChange={(e) => setStake(parseFloat(e.target.value) || 0)}
+                    step="0.1"
+                    min="0.1"
+                    max={balance}
+                    disabled={gameState === 'active'}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white font-bold text-xl disabled:opacity-50"
+                  />
+                  <div className="text-sm text-gray-400 mt-2">
+                    Potential Win: <span className="text-green-400 font-bold">{(stake * multiplier * 0.95).toFixed(2)} SOL</span>
+                    <span className="text-xs ml-2">(if you win alone)</span>
+                  </div>
+                </div>
+
+                {/* Place Bet Button */}
+                <button
+                  onClick={placeBet}
+                  disabled={!prediction || !publicKey || gameState === 'active' || placingBet || stake > balance}
+                  className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 py-4 rounded-lg font-bold text-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {placingBet ? 'Placing Bet...' : gameState === 'active' ? 'Round In Progress...' : 'Place Bet'}
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -308,15 +456,22 @@ const TossBox = () => {
               Recent Winners
             </h3>
             <div className="space-y-3">
-              {recentWinners.map((winner, i) => (
+              {recentWinners.slice(0, 10).map((winner, i) => (
                 <div key={i} className="flex justify-between items-center text-sm">
-                  <span className="text-gray-400">{winner.addr}</span>
+                  <span className="text-gray-400 font-mono">
+                    {winner.wallet_address.slice(0, 4)}...{winner.wallet_address.slice(-4)}
+                  </span>
                   <div className="text-right">
-                    <div className="text-green-400 font-bold">+{winner.amount.toFixed(2)} SOL</div>
+                    <div className="text-green-400 font-bold">+{parseFloat(winner.actual_win).toFixed(2)} SOL</div>
                     <div className="text-xs text-gray-500">{winner.multiplier}x</div>
                   </div>
                 </div>
               ))}
+              {recentWinners.length === 0 && (
+                <div className="text-gray-500 text-sm text-center py-4">
+                  No recent winners yet. Be the first!
+                </div>
+              )}
             </div>
           </div>
 
