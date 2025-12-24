@@ -55,7 +55,6 @@ const TossBox = () => {
   const [countdown, setCountdown] = useState(60);
   const [startPrice, setStartPrice] = useState(null);
   const [currentPrice, setCurrentPrice] = useState(0);
-  const [priceData, setPriceData] = useState([]);
   
   const [totalPot, setTotalPot] = useState(0);
   const [playerCount, setPlayerCount] = useState(0);
@@ -64,14 +63,19 @@ const TossBox = () => {
   const [recentWinners, setRecentWinners] = useState([]);
   const [placingBet, setPlacingBet] = useState(false);
 
+  // CANDLESTICK DATA
+  const [currentCandle, setCurrentCandle] = useState(null);
+  const [candleCountdown, setCandleCountdown] = useState(60);
+  const [completedCandles, setCompletedCandles] = useState([]);
+
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
-  const seriesRef = useRef(null);
+  const candlestickSeriesRef = useRef(null);
 
-  // PRICE FEED - 2 second polling
+  // PRICE FEED - 1 second polling for real-time candlesticks
   useEffect(() => {
     let active = true;
-    console.log('🔄 Starting price feed for', selectedCrypto);
+    console.log('🔄 Starting real-time price feed for', selectedCrypto);
 
     const fetchPrice = async () => {
       if (!active) return;
@@ -87,26 +91,36 @@ const TossBox = () => {
         
         if (!price || isNaN(price)) throw new Error('Invalid price');
         
-        console.log('✅ PRICE:', selectedCrypto, '=', price);
+        console.log('✅ TICK:', selectedCrypto, '=', price);
         
         if (active) {
           setCurrentPrice(price);
-          const timestamp = Date.now() / 1000;
-          setPriceData(prev => {
-            const newData = [...prev, { time: timestamp, value: price }];
-            return newData.slice(-100);
-          });
+          
+          // Initialize first candle if needed
+          if (!currentCandle) {
+            const now = Math.floor(Date.now() / 1000);
+            setCurrentCandle({
+              time: now,
+              open: price,
+              high: price,
+              low: price,
+              close: price
+            });
+            setCandleCountdown(60);
+          }
         }
       } catch (err) {
         console.error('❌ Price error:', err.message);
       }
     };
 
-    setPriceData([]);
+    setCompletedCandles([]);
+    setCurrentCandle(null);
     setCurrentPrice(0);
+    setCandleCountdown(60);
     fetchPrice();
     
-    const interval = setInterval(fetchPrice, 2000); // 2 seconds
+    const interval = setInterval(fetchPrice, 1000); // 1 SECOND for real-time ticks
 
     return () => {
       active = false;
@@ -114,9 +128,55 @@ const TossBox = () => {
     };
   }, [selectedCrypto]);
 
-  // CHART RENDERING
+  // UPDATE CURRENT CANDLE with each price tick
   useEffect(() => {
-    if (!chartContainerRef.current || priceData.length < 2) return;
+    if (!currentCandle || currentPrice === 0) return;
+
+    setCurrentCandle(prev => ({
+      ...prev,
+      close: currentPrice,
+      high: Math.max(prev.high, currentPrice),
+      low: Math.min(prev.low, currentPrice)
+    }));
+  }, [currentPrice]);
+
+  // CANDLE COUNTDOWN - Complete candle every 60 seconds
+  useEffect(() => {
+    if (!currentCandle) return;
+
+    const timer = setInterval(() => {
+      setCandleCountdown(prev => {
+        if (prev <= 1) {
+          // Complete the candle
+          console.log('📊 Candle completed:', currentCandle);
+          
+          setCompletedCandles(prevCandles => {
+            const newCandles = [...prevCandles, currentCandle];
+            return newCandles.slice(-30); // Keep last 30 candles
+          });
+
+          // Start new candle
+          const now = Math.floor(Date.now() / 1000);
+          setCurrentCandle({
+            time: now,
+            open: currentPrice,
+            high: currentPrice,
+            low: currentPrice,
+            close: currentPrice
+          });
+
+          return 60;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => clearInterval(timer);
+  }, [currentCandle, currentPrice]);
+
+  // RENDER CANDLESTICK CHART with lightweight-charts
+  useEffect(() => {
+    if (!chartContainerRef.current || (!completedCandles.length && !currentCandle)) return;
 
     import('lightweight-charts').then(({ createChart }) => {
       if (chartRef.current) {
@@ -125,7 +185,7 @@ const TossBox = () => {
 
       const chart = createChart(chartContainerRef.current, {
         width: chartContainerRef.current.clientWidth,
-        height: 300,
+        height: 350,
         layout: {
           background: { color: 'transparent' },
           textColor: '#9CA3AF',
@@ -136,28 +196,39 @@ const TossBox = () => {
         },
         timeScale: {
           timeVisible: true,
-          secondsVisible: true,
+          secondsVisible: false,
           borderColor: '#4B5563',
         },
         rightPriceScale: {
           borderColor: '#4B5563',
         },
+        crosshair: {
+          mode: 1,
+        },
       });
 
-      const series = chart.addLineSeries({
-        color: '#A855F7',
-        lineWidth: 2,
-        crosshairMarkerVisible: true,
-        crosshairMarkerRadius: 4,
-        priceLineVisible: true,
-        lastValueVisible: true,
+      // Create candlestick series
+      const candlestickSeries = chart.addCandlestickSeries({
+        upColor: '#22c55e',
+        downColor: '#ef4444',
+        borderVisible: false,
+        wickUpColor: '#22c55e',
+        wickDownColor: '#ef4444',
       });
 
-      series.setData(priceData);
-      chart.timeScale().fitContent();
+      // Combine completed candles with current forming candle
+      const allCandles = [...completedCandles];
+      if (currentCandle) {
+        allCandles.push(currentCandle);
+      }
+
+      if (allCandles.length > 0) {
+        candlestickSeries.setData(allCandles);
+        chart.timeScale().fitContent();
+      }
 
       chartRef.current = chart;
-      seriesRef.current = series;
+      candlestickSeriesRef.current = candlestickSeries;
 
       const handleResize = () => {
         if (chartContainerRef.current && chartRef.current) {
@@ -176,7 +247,15 @@ const TossBox = () => {
         }
       };
     });
-  }, [priceData]);
+  }, [completedCandles, currentCandle]);
+
+  // UPDATE CURRENT CANDLE in chart in real-time
+  useEffect(() => {
+    if (!candlestickSeriesRef.current || !currentCandle) return;
+
+    const allCandles = [...completedCandles, currentCandle];
+    candlestickSeriesRef.current.setData(allCandles);
+  }, [currentCandle, completedCandles]);
 
   useEffect(() => {
     fetchGameState();
@@ -318,13 +397,15 @@ const TossBox = () => {
     return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
 
+  const isCurrentCandleGreen = currentCandle && currentCandle.close >= currentCandle.open;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 text-white p-4">
       <div className="max-w-6xl mx-auto mb-6">
         <div className="flex justify-between items-center">
           <div>
             <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">TossBox</h1>
-            <p className="text-gray-400 text-sm">Predict. Win. Repeat.</p>
+            <p className="text-gray-400 text-sm">Real-Time Candlestick Trading • Predict. Win. Repeat.</p>
           </div>
           
           <div className="flex items-center gap-4">
@@ -380,7 +461,7 @@ const TossBox = () => {
       <div className="max-w-6xl mx-auto grid lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-4">
           <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
-            <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset • {CRYPTOS.length} Available • Live Prices</h3>
+            <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset • {CRYPTOS.length} Available • Live Candlesticks</h3>
             <div className="grid grid-cols-6 gap-2 max-h-48 overflow-y-auto pr-2">
               {CRYPTOS.map(c => (
                 <button
@@ -406,14 +487,26 @@ const TossBox = () => {
           <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
             <div className="flex justify-between items-center mb-4">
               <div>
-                <div className="text-3xl font-bold">${formatPrice(currentPrice)}</div>
-                <div className="text-sm text-gray-400">{selectedCrypto}/USD • Live</div>
+                <div className="text-3xl font-bold flex items-center gap-2">
+                  ${formatPrice(currentPrice)}
+                  {currentCandle && (
+                    <span className={`text-lg ${isCurrentCandleGreen ? 'text-green-400' : 'text-red-400'}`}>
+                      {isCurrentCandleGreen ? '▲' : '▼'}
+                    </span>
+                  )}
+                </div>
+                <div className="text-sm text-gray-400">{selectedCrypto}/USD • Live Tick Every 1s</div>
+              </div>
+
+              <div className="text-center">
+                <div className="text-3xl font-bold text-blue-400">{candleCountdown}s</div>
+                <div className="text-xs text-gray-400">Next Candle</div>
               </div>
               
               {gameState === 'active' && (
                 <div className="text-center">
-                  <div className="text-5xl font-bold text-purple-400">{countdown}s</div>
-                  <div className="text-sm text-gray-400">Time remaining</div>
+                  <div className="text-4xl font-bold text-purple-400">{countdown}s</div>
+                  <div className="text-xs text-gray-400">Round Ends</div>
                 </div>
               )}
               
@@ -427,18 +520,43 @@ const TossBox = () => {
               )}
             </div>
 
-            {currentPrice > 0 && priceData.length > 1 ? (
-              <div 
-                ref={chartContainerRef}
-                className="w-full"
-                style={{ height: '300px' }}
-              />
+            {/* CANDLESTICK CHART */}
+            {currentPrice > 0 && (completedCandles.length > 0 || currentCandle) ? (
+              <div>
+                <div 
+                  ref={chartContainerRef}
+                  className="w-full mb-3"
+                  style={{ height: '350px' }}
+                />
+                <div className="flex items-center justify-between text-xs text-gray-400 px-2">
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-1">
+                      <div className="w-3 h-5 bg-green-500 rounded-sm"></div>
+                      <span>Green (Up)</span>
+                    </div>
+                    <div className="flex items-center gap-1">
+                      <div className="w-3 h-5 bg-red-500 rounded-sm"></div>
+                      <span>Red (Down)</span>
+                    </div>
+                  </div>
+                  {currentCandle && (
+                    <div className="text-right">
+                      <span className="font-mono">
+                        O: {formatPrice(currentCandle.open)} 
+                        <span className="mx-2">H: {formatPrice(currentCandle.high)}</span>
+                        <span className="mx-2">L: {formatPrice(currentCandle.low)}</span>
+                        C: {formatPrice(currentCandle.close)}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
             ) : (
-              <div className="h-[300px] flex items-center justify-center">
+              <div className="h-[350px] flex items-center justify-center">
                 <div className="text-center">
                   <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
                   <div className="text-gray-400">
-                    {currentPrice === 0 ? `Loading ${selectedCrypto}...` : 'Building chart...'}
+                    {currentPrice === 0 ? `Loading ${selectedCrypto} real-time data...` : 'Building candlesticks...'}
                   </div>
                 </div>
               </div>
@@ -536,6 +654,18 @@ const TossBox = () => {
               ))}
               {recentWinners.length === 0 && <div className="text-gray-500 text-center py-4 text-sm">No winners yet!</div>}
             </div>
+          </div>
+
+          <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
+            <h3 className="text-lg font-bold mb-4">🔥 Real-Time Candlesticks</h3>
+            <ul className="space-y-2 text-sm text-gray-300">
+              <li>✅ Live price ticks every 1 second</li>
+              <li>📊 New candle forms every 60s</li>
+              <li>🟢 Green = Close higher than Open</li>
+              <li>🔴 Red = Close lower than Open</li>
+              <li>📈 Watch candles form in real-time</li>
+              <li>💎 {CRYPTOS.length} crypto assets available</li>
+            </ul>
           </div>
 
           <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
