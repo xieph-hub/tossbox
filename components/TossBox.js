@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } from '@solana/web3.js';
@@ -10,28 +10,27 @@ import Link from 'next/link';
 
 // Crypto options
 const CRYPTOS = [
-  { symbol: 'BTC', name: 'Bitcoin', binanceSymbol: 'BTCUSDT' },
-  { symbol: 'ETH', name: 'Ethereum', binanceSymbol: 'ETHUSDT' },
-  { symbol: 'SOL', name: 'Solana', binanceSymbol: 'SOLUSDT' },
-  { symbol: 'BNB', name: 'BNB', binanceSymbol: 'BNBUSDT' },
-  { symbol: 'XRP', name: 'Ripple', binanceSymbol: 'XRPUSDT' },
-  { symbol: 'ADA', name: 'Cardano', binanceSymbol: 'ADAUSDT' },
-  { symbol: 'DOGE', name: 'Dogecoin', binanceSymbol: 'DOGEUSDT' },
-  { symbol: 'MATIC', name: 'Polygon', binanceSymbol: 'MATICUSDT' },
-  { symbol: 'DOT', name: 'Polkadot', binanceSymbol: 'DOTUSDT' },
-  { symbol: 'AVAX', name: 'Avalanche', binanceSymbol: 'AVAXUSDT' },
-  { symbol: 'SHIB', name: 'Shiba Inu', binanceSymbol: 'SHIBUSDT' },
-  { symbol: 'LINK', name: 'Chainlink', binanceSymbol: 'LINKUSDT' },
-  { symbol: 'UNI', name: 'Uniswap', binanceSymbol: 'UNIUSDT' },
-  { symbol: 'LTC', name: 'Litecoin', binanceSymbol: 'LTCUSDT' },
-  { symbol: 'TRX', name: 'Tron', binanceSymbol: 'TRXUSDT' }
+  { symbol: 'BTC', binance: 'BTCUSDT' },
+  { symbol: 'ETH', binance: 'ETHUSDT' },
+  { symbol: 'SOL', binance: 'SOLUSDT' },
+  { symbol: 'BNB', binance: 'BNBUSDT' },
+  { symbol: 'XRP', binance: 'XRPUSDT' },
+  { symbol: 'ADA', binance: 'ADAUSDT' },
+  { symbol: 'DOGE', binance: 'DOGEUSDT' },
+  { symbol: 'MATIC', binance: 'MATICUSDT' },
+  { symbol: 'DOT', binance: 'DOTUSDT' },
+  { symbol: 'AVAX', binance: 'AVAXUSDT' },
+  { symbol: 'SHIB', binance: 'SHIBUSDT' },
+  { symbol: 'LINK', binance: 'LINKUSDT' },
+  { symbol: 'UNI', binance: 'UNIUSDT' },
+  { symbol: 'LTC', binance: 'LTCUSDT' },
+  { symbol: 'TRX', binance: 'TRXUSDT' }
 ];
 
 const TossBox = () => {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
   
-  // Game state
   const [selectedCrypto, setSelectedCrypto] = useState('BTC');
   const [prediction, setPrediction] = useState(null);
   const [multiplier, setMultiplier] = useState(1);
@@ -39,13 +38,9 @@ const TossBox = () => {
   const [gameState, setGameState] = useState('waiting');
   const [countdown, setCountdown] = useState(60);
   const [startPrice, setStartPrice] = useState(null);
+  const [currentPrice, setCurrentPrice] = useState(0);
+  const [priceData, setPriceData] = useState([]);
   
-  // ALL PRICES stored in one object - instant switching!
-  const [allPrices, setAllPrices] = useState({});
-  const [priceHistory, setPriceHistory] = useState({});
-  const websockets = useRef({});
-  
-  // Stats
   const [totalPot, setTotalPot] = useState(0);
   const [playerCount, setPlayerCount] = useState(0);
   const [balance, setBalance] = useState(0);
@@ -53,128 +48,52 @@ const TossBox = () => {
   const [recentWinners, setRecentWinners] = useState([]);
   const [placingBet, setPlacingBet] = useState(false);
 
-  // Get current price instantly from cache
-  const currentPrice = allPrices[selectedCrypto] || 0;
-  const priceData = priceHistory[selectedCrypto] || [];
-
-  // MASTER PRICE FEED - Connects to ALL cryptos at once via single WebSocket
+  // SIMPLE PRICE FEED - Just works!
   useEffect(() => {
-    console.log('🚀 Initializing MASTER price feed for all assets...');
-    
-    // Step 1: Fetch ALL prices at once via REST
-    const fetchAllPricesInitial = async () => {
+    const crypto = CRYPTOS.find(c => c.symbol === selectedCrypto);
+    if (!crypto) return;
+
+    let active = true;
+
+    const fetchPrice = async () => {
+      if (!active) return;
+      
       try {
-        const symbols = CRYPTOS.map(c => c.binanceSymbol).join(',');
-        const response = await fetch(
-          `https://api.binance.com/api/v3/ticker/price`
-        );
-        const data = await response.json();
+        const res = await fetch(`https://api.binance.com/api/v3/ticker/price?symbol=${crypto.binance}`);
+        const data = await res.json();
+        const price = parseFloat(data.price);
         
-        const prices = {};
-        const histories = {};
-        
-        CRYPTOS.forEach(crypto => {
-          const priceData = data.find(d => d.symbol === crypto.binanceSymbol);
-          if (priceData) {
-            const price = parseFloat(priceData.price);
-            prices[crypto.symbol] = price;
-            histories[crypto.symbol] = [{ time: Date.now(), price }];
-          }
-        });
-        
-        console.log('✅ ALL prices loaded:', prices);
-        setAllPrices(prices);
-        setPriceHistory(histories);
-      } catch (error) {
-        console.error('Failed to fetch initial prices:', error);
-      }
-    };
-
-    // Step 2: Connect to Binance Combined Stream (ALL tickers at once!)
-    const connectMasterWebSocket = () => {
-      // Create stream list for all cryptos
-      const streams = CRYPTOS.map(c => `${c.binanceSymbol.toLowerCase()}@ticker`).join('/');
-      const wsUrl = `wss://stream.binance.com:9443/stream?streams=${streams}`;
-      
-      console.log('🔌 Connecting to MASTER WebSocket...');
-      const ws = new WebSocket(wsUrl);
-      
-      ws.onopen = () => {
-        console.log('✅ MASTER WebSocket connected - streaming ALL prices!');
-      };
-      
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          if (message.data) {
-            const tickerData = message.data;
-            const symbol = tickerData.s; // e.g., "BTCUSDT"
-            const price = parseFloat(tickerData.c); // current price
-            
-            // Find our crypto
-            const crypto = CRYPTOS.find(c => c.binanceSymbol === symbol);
-            if (crypto && price && !isNaN(price)) {
-              // Update price instantly
-              setAllPrices(prev => ({
-                ...prev,
-                [crypto.symbol]: price
-              }));
-              
-              // Update history
-              setPriceHistory(prev => {
-                const history = prev[crypto.symbol] || [];
-                const newHistory = [...history, { time: Date.now(), price }].slice(-30);
-                return {
-                  ...prev,
-                  [crypto.symbol]: newHistory
-                };
-              });
-            }
-          }
-        } catch (error) {
-          console.error('WebSocket parse error:', error);
+        if (price && !isNaN(price) && active) {
+          setCurrentPrice(price);
+          setPriceData(prev => [...prev.slice(-29), { time: Date.now(), price }]);
         }
-      };
-      
-      ws.onerror = (error) => {
-        console.error('Master WebSocket error:', error);
-      };
-      
-      ws.onclose = () => {
-        console.log('Master WebSocket closed, reconnecting in 3s...');
-        setTimeout(connectMasterWebSocket, 3000);
-      };
-      
-      websockets.current.master = ws;
-    };
-
-    // Execute
-    fetchAllPricesInitial();
-    setTimeout(connectMasterWebSocket, 1000);
-
-    // Cleanup
-    return () => {
-      if (websockets.current.master) {
-        websockets.current.master.close();
+      } catch (err) {
+        console.error('Price fetch error:', err);
       }
     };
-  }, []);
 
-  // Fetch game state periodically
+    // Fetch immediately
+    fetchPrice();
+    
+    // Then every 2 seconds
+    const interval = setInterval(fetchPrice, 2000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [selectedCrypto]);
+
   useEffect(() => {
     fetchGameState();
     const interval = setInterval(fetchGameState, 5000);
     return () => clearInterval(interval);
   }, []);
 
-  // Fetch user balance when wallet connects
   useEffect(() => {
-    if (publicKey) {
-      fetchUserBalance();
-    }
+    if (publicKey) fetchUserBalance();
   }, [publicKey, connection]);
 
-  // Game countdown
   useEffect(() => {
     if (gameState === 'active' && countdown > 0) {
       const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
@@ -186,14 +105,14 @@ const TossBox = () => {
 
   const fetchGameState = async () => {
     try {
-      const response = await fetch('/api/get-game-state');
-      const data = await response.json();
+      const res = await fetch('/api/get-game-state');
+      const data = await res.json();
       
       setTotalPot(data.totalPot || 0);
       setPlayerCount(data.playerCount || 0);
       setRecentWinners(data.recentWinners || []);
       
-      if (data.activeRound && data.activeRound.status === 'active') {
+      if (data.activeRound?.status === 'active') {
         const startTime = new Date(data.activeRound.start_time).getTime();
         const elapsed = Math.floor((Date.now() - startTime) / 1000);
         const remaining = Math.max(0, 60 - elapsed);
@@ -204,8 +123,8 @@ const TossBox = () => {
           setStartPrice(parseFloat(data.activeRound.start_price));
         }
       }
-    } catch (error) {
-      console.error('Failed to fetch game state:', error);
+    } catch (err) {
+      console.error('Game state error:', err);
     }
   };
 
@@ -214,11 +133,11 @@ const TossBox = () => {
       const bal = await connection.getBalance(publicKey);
       setBalance(bal / LAMPORTS_PER_SOL);
 
-      const response = await fetch(`/api/profile?wallet=${publicKey.toString()}`);
-      const data = await response.json();
+      const res = await fetch(`/api/profile?wallet=${publicKey.toString()}`);
+      const data = await res.json();
       setUserStreak(data.profile?.win_streak || 0);
-    } catch (error) {
-      console.error('Failed to fetch balance:', error);
+    } catch (err) {
+      console.error('Balance error:', err);
     }
   };
 
@@ -228,19 +147,19 @@ const TossBox = () => {
     setPlacingBet(true);
     
     try {
-      const treasuryPubkey = new PublicKey(process.env.NEXT_PUBLIC_TREASURY_WALLET);
-      const transaction = new Transaction().add(
+      const treasury = new PublicKey(process.env.NEXT_PUBLIC_TREASURY_WALLET);
+      const tx = new Transaction().add(
         SystemProgram.transfer({
           fromPubkey: publicKey,
-          toPubkey: treasuryPubkey,
+          toPubkey: treasury,
           lamports: Math.floor(stake * LAMPORTS_PER_SOL),
         })
       );
 
-      const signature = await sendTransaction(transaction, connection);
-      await connection.confirmTransaction(signature, 'confirmed');
+      const sig = await sendTransaction(tx, connection);
+      await connection.confirmTransaction(sig, 'confirmed');
 
-      const response = await fetch('/api/place-bet', {
+      const res = await fetch('/api/place-bet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -248,12 +167,12 @@ const TossBox = () => {
           prediction,
           multiplier,
           stakeAmount: stake,
-          txSignature: signature,
+          txSignature: sig,
           crypto: selectedCrypto
         })
       });
 
-      const result = await response.json();
+      const result = await res.json();
       
       if (result.success) {
         setGameState('active');
@@ -261,14 +180,13 @@ const TossBox = () => {
         setCountdown(60);
         setBalance(prev => prev - stake);
         await fetchGameState();
-        alert('Bet placed successfully! Good luck! 🎲');
+        alert('Bet placed! Good luck! 🎲');
       } else {
-        alert('Failed to place bet: ' + (result.error || 'Unknown error'));
+        alert('Failed: ' + (result.error || 'Unknown error'));
       }
-      
-    } catch (error) {
-      console.error('Bet placement error:', error);
-      alert('Failed to place bet: ' + error.message);
+    } catch (err) {
+      console.error('Bet error:', err);
+      alert('Failed: ' + err.message);
     } finally {
       setPlacingBet(false);
     }
@@ -291,49 +209,34 @@ const TossBox = () => {
       onClick={() => setMultiplier(value)}
       disabled={gameState === 'active'}
       className={`px-4 py-2 rounded-lg font-bold transition-all disabled:opacity-50 ${
-        multiplier === value
-          ? 'bg-purple-600 text-white scale-105'
-          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+        multiplier === value ? 'bg-purple-600 text-white scale-105' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
       }`}
     >
       {value}x
     </button>
   );
 
-  const formatPrice = (price) => {
-    if (!price || price === 0) return '0.00';
-    if (price < 0.01) return price.toFixed(6);
-    if (price < 1) return price.toFixed(4);
-    return price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const formatPrice = (p) => {
+    if (!p) return '0.00';
+    if (p < 0.01) return p.toFixed(6);
+    if (p < 1) return p.toFixed(4);
+    return p.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   };
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-purple-900 to-gray-900 text-white p-4">
-      {/* Header */}
       <div className="max-w-6xl mx-auto mb-6">
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
-              TossBox
-            </h1>
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">TossBox</h1>
             <p className="text-gray-400 text-sm">Predict. Win. Repeat.</p>
           </div>
           
           <div className="flex items-center gap-4">
             {publicKey && (
               <div className="flex gap-2">
-                <Link 
-                  href="/profile"
-                  className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold transition-all"
-                >
-                  Profile
-                </Link>
-                <Link 
-                  href="/leaderboard"
-                  className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold transition-all"
-                >
-                  Leaderboard
-                </Link>
+                <Link href="/profile" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold transition-all">Profile</Link>
+                <Link href="/leaderboard" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold transition-all">Leaderboard</Link>
               </div>
             )}
             
@@ -343,16 +246,13 @@ const TossBox = () => {
               <div className="text-right">
                 <div className="text-sm text-gray-400">Balance</div>
                 <div className="text-2xl font-bold">{balance.toFixed(3)} SOL</div>
-                <div className="text-xs text-gray-500">
-                  {publicKey.toString().slice(0, 4)}...{publicKey.toString().slice(-4)}
-                </div>
+                <div className="text-xs text-gray-500">{publicKey.toString().slice(0, 4)}...{publicKey.toString().slice(-4)}</div>
               </div>
             )}
           </div>
         </div>
       </div>
 
-      {/* Stats Bar */}
       <div className="max-w-6xl mx-auto grid grid-cols-3 gap-4 mb-6">
         <div className="bg-gray-800/50 backdrop-blur rounded-lg p-4 border border-gray-700">
           <div className="flex items-center gap-2 text-gray-400 mb-1">
@@ -383,38 +283,29 @@ const TossBox = () => {
       </div>
 
       <div className="max-w-6xl mx-auto grid lg:grid-cols-3 gap-6">
-        {/* Main Game Area */}
         <div className="lg:col-span-2 space-y-4">
           {/* Crypto Selector */}
           <div className="bg-gray-800/50 backdrop-blur rounded-lg p-4 border border-gray-700">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-sm font-bold text-gray-400">Select Asset</h3>
-              <div className="text-xs text-gray-500">{CRYPTOS.length} assets • Live prices</div>
-            </div>
-            <div className="grid grid-cols-5 gap-2 max-h-32 overflow-y-auto pr-2">
-              {CRYPTOS.map(crypto => {
-                const price = allPrices[crypto.symbol];
-                return (
-                  <button
-                    key={crypto.symbol}
-                    onClick={() => setSelectedCrypto(crypto.symbol)}
-                    disabled={gameState === 'active'}
-                    className={`p-2 rounded-lg font-bold text-sm transition-all disabled:opacity-50 ${
-                      selectedCrypto === crypto.symbol
-                        ? 'bg-purple-600 text-white ring-2 ring-purple-400'
-                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
-                    }`}
-                    title={`${crypto.name} - $${formatPrice(price)}`}
-                  >
-                    <div>{crypto.symbol}</div>
-                    {price > 0 && (
-                      <div className="text-[10px] opacity-70 mt-0.5">
-                        ${price < 1 ? price.toFixed(4) : price.toFixed(0)}
-                      </div>
-                    )}
-                  </button>
-                );
-              })}
+            <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset ({CRYPTOS.length} available)</h3>
+            <div className="grid grid-cols-5 gap-2">
+              {CRYPTOS.map(c => (
+                <button
+                  key={c.symbol}
+                  onClick={() => {
+                    setSelectedCrypto(c.symbol);
+                    setPriceData([]);
+                    setCurrentPrice(0);
+                  }}
+                  disabled={gameState === 'active'}
+                  className={`py-3 px-2 rounded-lg font-bold text-sm transition-all disabled:opacity-50 ${
+                    selectedCrypto === c.symbol
+                      ? 'bg-purple-600 text-white ring-2 ring-purple-400'
+                      : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                  }`}
+                >
+                  {c.symbol}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -422,9 +313,7 @@ const TossBox = () => {
           <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
             <div className="flex justify-between items-center mb-4">
               <div>
-                <div className="text-3xl font-bold">
-                  ${formatPrice(currentPrice)}
-                </div>
+                <div className="text-3xl font-bold">${formatPrice(currentPrice)}</div>
                 <div className="text-sm text-gray-400">{selectedCrypto}/USD</div>
               </div>
               
@@ -440,34 +329,22 @@ const TossBox = () => {
                   <div className="text-2xl font-bold">
                     {currentPrice >= startPrice ? '+' : ''}{(currentPrice - startPrice).toFixed(2)}
                   </div>
-                  <div className="text-sm">
-                    {((currentPrice - startPrice) / startPrice * 100).toFixed(2)}%
-                  </div>
+                  <div className="text-sm">{((currentPrice - startPrice) / startPrice * 100).toFixed(2)}%</div>
                 </div>
               )}
             </div>
 
-            {currentPrice > 0 && priceData.length > 0 ? (
+            {priceData.length > 0 ? (
               <ResponsiveContainer width="100%" height={250}>
                 <LineChart data={priceData}>
                   <XAxis dataKey="time" hide />
                   <YAxis domain={['auto', 'auto']} hide />
-                  <Line 
-                    type="monotone" 
-                    dataKey="price" 
-                    stroke="#a855f7" 
-                    strokeWidth={3}
-                    dot={false}
-                    isAnimationActive={false}
-                  />
+                  <Line type="monotone" dataKey="price" stroke="#a855f7" strokeWidth={3} dot={false} isAnimationActive={false} />
                 </LineChart>
               </ResponsiveContainer>
             ) : (
               <div className="h-[250px] flex items-center justify-center">
-                <div className="text-center">
-                  <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
-                  <div className="text-gray-400">Connecting to live feed...</div>
-                </div>
+                <div className="animate-pulse text-gray-400">Loading {selectedCrypto} price...</div>
               </div>
             )}
           </div>
@@ -478,7 +355,7 @@ const TossBox = () => {
             
             {!publicKey ? (
               <div className="text-center py-8">
-                <p className="text-gray-400 mb-4">Connect your wallet to start playing</p>
+                <p className="text-gray-400 mb-4">Connect wallet to play</p>
                 <WalletMultiButton className="!bg-purple-600 hover:!bg-purple-700 !px-6 !py-3 !rounded-lg !font-bold" />
               </div>
             ) : (
@@ -488,9 +365,7 @@ const TossBox = () => {
                     onClick={() => setPrediction('up')}
                     disabled={gameState === 'active'}
                     className={`py-6 rounded-lg font-bold text-xl transition-all ${
-                      prediction === 'up'
-                        ? 'bg-green-600 text-white scale-105'
-                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      prediction === 'up' ? 'bg-green-600 text-white scale-105' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                     } disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
                     <TrendingUp className="mx-auto mb-2" size={32} />
@@ -501,9 +376,7 @@ const TossBox = () => {
                     onClick={() => setPrediction('down')}
                     disabled={gameState === 'active'}
                     className={`py-6 rounded-lg font-bold text-xl transition-all ${
-                      prediction === 'down'
-                        ? 'bg-red-600 text-white scale-105'
-                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      prediction === 'down' ? 'bg-red-600 text-white scale-105' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                     } disabled:opacity-50 disabled:cursor-not-allowed`}
                   >
                     <TrendingDown className="mx-auto mb-2" size={32} />
@@ -519,13 +392,10 @@ const TossBox = () => {
                     <MultiplierButton value={5} />
                     <MultiplierButton value={10} />
                   </div>
-                  <p className="text-xs text-gray-500 mt-2">
-                    Higher multipliers = bigger potential wins, but winners split the pot
-                  </p>
                 </div>
 
                 <div className="mb-6">
-                  <label className="block text-sm text-gray-400 mb-2">Stake Amount (SOL)</label>
+                  <label className="block text-sm text-gray-400 mb-2">Stake (SOL)</label>
                   <input
                     type="number"
                     value={stake}
@@ -537,17 +407,16 @@ const TossBox = () => {
                     className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white font-bold text-xl disabled:opacity-50"
                   />
                   <div className="text-sm text-gray-400 mt-2">
-                    Potential Win: <span className="text-green-400 font-bold">{(stake * multiplier * 0.95).toFixed(2)} SOL</span>
-                    <span className="text-xs ml-2">(if you win alone)</span>
+                    Win: <span className="text-green-400 font-bold">{(stake * multiplier * 0.95).toFixed(2)} SOL</span>
                   </div>
                 </div>
 
                 <button
                   onClick={placeBet}
-                  disabled={!prediction || !publicKey || gameState === 'active' || placingBet || stake > balance || currentPrice === 0}
+                  disabled={!prediction || gameState === 'active' || placingBet || stake > balance || currentPrice === 0}
                   className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 py-4 rounded-lg font-bold text-xl transition-all disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  {placingBet ? 'Placing Bet...' : gameState === 'active' ? 'Round In Progress...' : 'Place Bet'}
+                  {placingBet ? 'Placing...' : gameState === 'active' ? 'In Progress...' : 'Place Bet'}
                 </button>
               </>
             )}
@@ -556,46 +425,38 @@ const TossBox = () => {
 
         {/* Sidebar */}
         <div className="space-y-4">
-          {/* Recent Winners */}
           <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
               <Trophy size={20} className="text-yellow-400" />
               Recent Winners
             </h3>
             <div className="space-y-3">
-              {recentWinners.slice(0, 10).map((winner, i) => (
-                <div key={i} className="flex justify-between items-center text-sm">
-                  <span className="text-gray-400 font-mono">
-                    {winner.wallet_address.slice(0, 4)}...{winner.wallet_address.slice(-4)}
-                  </span>
+              {recentWinners.slice(0, 10).map((w, i) => (
+                <div key={i} className="flex justify-between text-sm">
+                  <span className="text-gray-400 font-mono">{w.wallet_address.slice(0, 4)}...{w.wallet_address.slice(-4)}</span>
                   <div className="text-right">
-                    <div className="text-green-400 font-bold">+{parseFloat(winner.actual_win).toFixed(2)} SOL</div>
-                    <div className="text-xs text-gray-500">{winner.multiplier}x</div>
+                    <div className="text-green-400 font-bold">+{parseFloat(w.actual_win).toFixed(2)} SOL</div>
+                    <div className="text-xs text-gray-500">{w.multiplier}x</div>
                   </div>
                 </div>
               ))}
-              {recentWinners.length === 0 && (
-                <div className="text-gray-500 text-sm text-center py-4">
-                  No recent winners yet. Be the first!
-                </div>
-              )}
+              {recentWinners.length === 0 && <div className="text-gray-500 text-sm text-center py-4">No winners yet!</div>}
             </div>
           </div>
 
-          {/* How to Play */}
           <div className="bg-gray-800/50 backdrop-blur rounded-lg p-6 border border-gray-700">
             <h3 className="text-lg font-bold mb-4">How to Play</h3>
             <ol className="space-y-2 text-sm text-gray-300">
-              <li>1. Connect your Solana wallet</li>
-              <li>2. Choose from {CRYPTOS.length} crypto assets</li>
-              <li>3. Predict if price goes UP or DOWN</li>
-              <li>4. Select your confidence multiplier</li>
-              <li>5. Set your stake amount</li>
-              <li>6. Watch the 60-second countdown</li>
-              <li>7. Winners split the pot based on multipliers!</li>
+              <li>1. Connect Solana wallet</li>
+              <li>2. Pick a crypto asset</li>
+              <li>3. Predict UP or DOWN</li>
+              <li>4. Choose multiplier</li>
+              <li>5. Set stake amount</li>
+              <li>6. Watch 60s countdown</li>
+              <li>7. Winners split the pot!</li>
             </ol>
-            <div className="mt-4 p-3 bg-purple-900/30 rounded border border-purple-700 text-xs text-gray-300">
-              5% platform fee on all winnings. Peer-to-peer betting - no house edge!
+            <div className="mt-4 p-3 bg-purple-900/30 rounded border border-purple-700 text-xs">
+              5% fee • Peer-to-peer • No house edge
             </div>
           </div>
         </div>
