@@ -81,7 +81,11 @@ const TossBox = () => {
 
       try {
         const url = `/api/get-price?crypto=${encodeURIComponent(selectedCrypto)}`;
-        const res = await fetch(url);
+        const url = `/api/get-price?crypto=${encodeURIComponent(selectedCrypto)}&t=${Date.now()}`;
+const res = await fetch(url, {
+  cache: 'no-store',
+  headers: { 'Cache-Control': 'no-store' },
+});
 
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
