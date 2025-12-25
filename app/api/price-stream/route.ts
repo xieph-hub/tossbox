@@ -7,85 +7,87 @@ export const dynamic = "force-dynamic";
 
 const HERMES_BASE = "https://hermes.pyth.network";
 
-// In-memory cache (good enough for Vercel instance lifetime)
+// Simple in-memory cache for feed IDs (per server instance)
 const idCache = new Map<string, { id: string; ts: number }>();
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
 
-/**
- * Resolve a Pyth "price feed id" from a simple symbol like "BTC".
- * We use Hermes metadata endpoint /v2/price_feeds with query + asset_type=crypto.
- * (Hermes exposes /v2/price_feeds and streaming endpoints.) :contentReference[oaicite:2]{index=2}
- */
-async function resolvePythId(symbol: string): Promise<string> {
-  const s = symbol.trim().toUpperCase();
+type HermesFeed = {
+  id: string;
+  attributes?: {
+    symbol?: string;
+    asset_type?: string;
+  };
+};
+
+function cleanSymbol(v: string) {
+  return (v || "").trim().toUpperCase();
+}
+
+async function resolvePythFeedId(symbol: string): Promise<string> {
+  const s = cleanSymbol(symbol);
   if (!s) throw new Error("Missing crypto symbol");
 
   const cached = idCache.get(s);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.id;
 
-  // Query metadata
   const url = new URL(`${HERMES_BASE}/v2/price_feeds`);
   url.searchParams.set("query", s);
   url.searchParams.set("asset_type", "crypto");
 
   const res = await fetch(url.toString(), {
-    headers: { "Accept": "application/json" },
     cache: "no-store",
+    headers: { Accept: "application/json" },
   });
 
   if (!res.ok) throw new Error(`Hermes metadata HTTP ${res.status}`);
 
-  const feeds: Array<{ id: string; attributes?: { symbol?: string } }> = await res.json();
+  const feeds = (await res.json()) as HermesFeed[];
 
-  // Pyth symbols are typically like: "Crypto.BTC/USD"
-  const targetSymbol = `Crypto.${s}/USD`;
+  // Prefer exact match like "Crypto.BTC/USD"
+  const target = `Crypto.${s}/USD`;
+  const exact = feeds.find((f) => f?.attributes?.symbol === target);
+  const loose = feeds.find((f) => (f?.attributes?.symbol || "").includes(`.${s}/USD`));
 
-  const exact = feeds.find((f) => f?.attributes?.symbol === targetSymbol);
-  const picked = exact || feeds.find((f) => (f?.attributes?.symbol || "").includes(`.${s}/USD`));
-
-  if (!picked?.id) {
-    throw new Error(`Could not resolve Pyth feed id for ${s} (wanted ${targetSymbol})`);
-  }
+  const picked = exact || loose;
+  if (!picked?.id) throw new Error(`No Pyth feed id found for ${s} (wanted ${target})`);
 
   idCache.set(s, { id: picked.id, ts: Date.now() });
   return picked.id;
 }
 
 export async function GET(req: NextRequest) {
-  const symbol = (req.nextUrl.searchParams.get("crypto") || "").trim().toUpperCase();
-  if (!symbol) return new Response("Missing ?crypto=SYMBOL", { status: 400 });
+  const symbol = cleanSymbol(req.nextUrl.searchParams.get("crypto") || "BTC");
 
-  let id: string;
+  let feedId: string;
   try {
-    id = await resolvePythId(symbol);
+    feedId = await resolvePythFeedId(symbol);
   } catch (e: any) {
-    return new Response(e?.message || "Failed to resolve price feed id", { status: 500 });
+    return new Response(e?.message || "Failed to resolve feed id", { status: 500 });
   }
 
-  // Hermes realtime streaming SSE endpoint :contentReference[oaicite:3]{index=3}
+  // Hermes SSE stream endpoint
   const streamUrl = new URL(`${HERMES_BASE}/v2/updates/price/stream`);
-  streamUrl.searchParams.append("ids[]", id);
+  streamUrl.searchParams.append("ids[]", feedId);
 
   const upstream = await fetch(streamUrl.toString(), {
+    cache: "no-store",
     headers: {
-      "Accept": "text/event-stream",
+      Accept: "text/event-stream",
       "Cache-Control": "no-cache",
     },
-    cache: "no-store",
   });
 
   if (!upstream.ok || !upstream.body) {
     return new Response(`Upstream stream failed HTTP ${upstream.status}`, { status: 502 });
   }
 
-  // Proxy the SSE stream as-is (same-origin for your browser)
+  // Proxy the SSE stream as-is
   return new Response(upstream.body, {
     status: 200,
     headers: {
       "Content-Type": "text/event-stream; charset=utf-8",
       "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
-      "Connection": "keep-alive",
-      // Optional hardening:
+      Connection: "keep-alive",
       "X-Accel-Buffering": "no",
     },
   });
