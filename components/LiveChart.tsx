@@ -7,27 +7,17 @@ type Props = {
   crypto: string; // "BTC" | "ETH" | ...
 };
 
-type PriceResp = {
-  crypto: string;
-  price: number;
-  publishTime?: number;
-  timestamp?: number;
-  source?: string;
-};
-
 export default function LiveChart({ crypto }: Props) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const seriesRef = useRef<ISeriesApi<"Line"> | null>(null);
   const chartRef = useRef<ReturnType<typeof createChart> | null>(null);
 
   const [ready, setReady] = useState(false);
-
   const symbol = useMemo(() => (crypto || "BTC").toUpperCase(), [crypto]);
 
   useEffect(() => {
     if (!containerRef.current) return;
 
-    // IMPORTANT: container must have non-zero height
     const chart = createChart(containerRef.current, {
       autoSize: true,
       layout: { background: { color: "transparent" }, textColor: "#94a3b8" },
@@ -36,17 +26,15 @@ export default function LiveChart({ crypto }: Props) {
       timeScale: { borderVisible: false, timeVisible: true, secondsVisible: true },
     });
 
-    const series = chart.addLineSeries({
-      lineWidth: 2,
-    });
+    const series = chart.addLineSeries({ lineWidth: 2 });
 
     chartRef.current = chart;
     seriesRef.current = series;
     setReady(true);
 
     const handleResize = () => {
-      // autoSize handles it but some layouts benefit from forcing a resize
-      chart.resize(containerRef.current!.clientWidth, containerRef.current!.clientHeight);
+      if (!containerRef.current) return;
+      chart.resize(containerRef.current.clientWidth, containerRef.current.clientHeight);
     };
     window.addEventListener("resize", handleResize);
 
@@ -60,40 +48,35 @@ export default function LiveChart({ crypto }: Props) {
 
   useEffect(() => {
     if (!ready) return;
-    let stop = false;
 
-    async function tick() {
+    let es: EventSource | null = null;
+
+    // Subscribe to realtime SSE
+    es = new EventSource(`/api/price-stream?crypto=${encodeURIComponent(symbol)}`);
+
+    es.onmessage = (event) => {
       try {
-        const res = await fetch(`/api/get-price?crypto=${encodeURIComponent(symbol)}`, {
-          cache: "no-store",
-        });
-        if (!res.ok) throw new Error(`get-price ${res.status}`);
-        const data = (await res.json()) as PriceResp;
+        const payload = JSON.parse(event.data);
+        const parsed = payload?.parsed?.[0];
 
-        const price = Number(data.price);
-        if (!Number.isFinite(price)) return;
+        const n = Number(parsed?.price?.price);
+        const e = Number(parsed?.price?.expo);
+        if (!Number.isFinite(n) || !Number.isFinite(e)) return;
 
-        // Use publishTime if you have it; else use now
-        const t = data.publishTime
-          ? (data.publishTime as Time)
-          : (Math.floor(Date.now() / 1000) as Time);
+        const price = n * Math.pow(10, e);
+        if (!Number.isFinite(price) || price <= 0) return;
 
+        const t = Math.floor(Date.now() / 1000) as Time;
         seriesRef.current?.update({ time: t, value: price });
-      } catch (e) {
-        // Keep running even if a tick fails
-        // console.error(e);
+      } catch {
+        // ignore
       }
-    }
-
-    // initial + interval
-    tick();
-    const id = setInterval(() => {
-      if (!stop) tick();
-    }, 1000);
+    };
 
     return () => {
-      stop = true;
-      clearInterval(id);
+      try {
+        es?.close();
+      } catch {}
     };
   }, [ready, symbol]);
 
