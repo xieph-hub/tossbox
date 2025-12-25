@@ -46,7 +46,7 @@ const CRYPTOS = [
 const TossBox = () => {
   const { publicKey, sendTransaction } = useWallet();
   const { connection } = useConnection();
-  
+
   const [selectedCrypto, setSelectedCrypto] = useState('BTC');
   const [prediction, setPrediction] = useState(null);
   const [multiplier, setMultiplier] = useState(1);
@@ -55,7 +55,7 @@ const TossBox = () => {
   const [countdown, setCountdown] = useState(60);
   const [startPrice, setStartPrice] = useState(null);
   const [currentPrice, setCurrentPrice] = useState(0);
-  
+
   const [totalPot, setTotalPot] = useState(0);
   const [playerCount, setPlayerCount] = useState(0);
   const [balance, setBalance] = useState(0);
@@ -66,51 +66,47 @@ const TossBox = () => {
   // CANDLESTICK DATA
   const [candleData, setCandleData] = useState([]);
   const [currentCandle, setCurrentCandle] = useState(null);
-  const candleStartTimeRef = useRef(null);
 
   const chartContainerRef = useRef(null);
   const chartRef = useRef(null);
   const candlestickSeriesRef = useRef(null);
+  const didFitOnceRef = useRef(false);
 
   // PRICE FEED - Real-time updates every second
   useEffect(() => {
     let active = true;
-    console.log('🔄 Starting price feed for', selectedCrypto);
 
     const fetchPrice = async () => {
       if (!active) return;
-      
+
       try {
-        const url = `/api/get-price?crypto=${selectedCrypto}`;
+        const url = `/api/get-price?crypto=${encodeURIComponent(selectedCrypto)}`;
         const res = await fetch(url);
-        
+
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        
+
         const data = await res.json();
-        const price = parseFloat(data.price);
-        
-        if (!price || isNaN(price)) throw new Error('Invalid price');
-        
+        const price = Number(data?.price);
+
+        if (!Number.isFinite(price) || price <= 0) throw new Error('Invalid price');
+
         if (active) {
-          const now = Date.now();
-          const currentTime = Math.floor(now / 1000);
-          
           setCurrentPrice(price);
-          
-          // Determine current minute timestamp (60-second candles)
-          const candleTime = Math.floor(currentTime / 60) * 60;
-          
-          setCurrentCandle(prev => {
+
+          const nowSec = Math.floor(Date.now() / 1000);
+          const candleTime = Math.floor(nowSec / 60) * 60; // 1-min candles
+
+          setCurrentCandle((prev) => {
             // Start new candle if time has changed
             if (!prev || prev.time !== candleTime) {
-              // If there was a previous candle, add it to completed candles
+              // Push previous candle into history
               if (prev) {
-                setCandleData(prevData => {
-                  const newData = [...prevData, prev];
-                  return newData.slice(-50); // Keep last 50 candles
+                setCandleData((prevData) => {
+                  const next = [...prevData, prev];
+                  return next.slice(-50);
                 });
               }
-              
+
               return {
                 time: candleTime,
                 open: price,
@@ -119,7 +115,7 @@ const TossBox = () => {
                 close: price
               };
             }
-            
+
             // Update existing candle
             return {
               ...prev,
@@ -130,16 +126,19 @@ const TossBox = () => {
           });
         }
       } catch (err) {
-        console.error('❌ Price error:', err.message);
+        // keep it quiet-ish; chart will show loader
+        console.error('❌ Price error:', err?.message || err);
       }
     };
 
+    // reset when switching asset
     setCandleData([]);
     setCurrentCandle(null);
     setCurrentPrice(0);
+    didFitOnceRef.current = false;
+
     fetchPrice();
-    
-    const interval = setInterval(fetchPrice, 1000); // Update every second
+    const interval = setInterval(fetchPrice, 1000);
 
     return () => {
       active = false;
@@ -147,68 +146,85 @@ const TossBox = () => {
     };
   }, [selectedCrypto]);
 
-  // RENDER CANDLESTICK CHART
+  // INIT CHART (MOUNT ONCE) - IMPORTANT: container must always exist
   useEffect(() => {
-    if (!chartContainerRef.current) return;
+    let mounted = true;
 
-    import('lightweight-charts').then(({ createChart }) => {
+    async function initChart() {
+      if (!chartContainerRef.current) return;
+
+      const { createChart } = await import('lightweight-charts');
+      if (!mounted || !chartContainerRef.current) return;
+
+      // cleanup existing chart if any
       if (chartRef.current) {
-        chartRef.current.remove();
+        try {
+          chartRef.current.remove();
+        } catch {}
+        chartRef.current = null;
+        candlestickSeriesRef.current = null;
       }
 
       const chart = createChart(chartContainerRef.current, {
-        width: chartContainerRef.current.clientWidth,
+        width: chartContainerRef.current.clientWidth || 600,
         height: 400,
         layout: {
           background: { color: 'transparent' },
-          textColor: '#9CA3AF',
+          textColor: '#9CA3AF'
         },
         grid: {
           vertLines: { color: '#1f2937' },
-          horzLines: { color: '#1f2937' },
+          horzLines: { color: '#1f2937' }
         },
         timeScale: {
           timeVisible: true,
           secondsVisible: false,
-          borderColor: '#374151',
+          borderColor: '#374151'
         },
         rightPriceScale: {
           borderColor: '#374151',
-          scaleMargins: {
-            top: 0.1,
-            bottom: 0.1,
-          },
-        },
+          scaleMargins: { top: 0.1, bottom: 0.1 }
+        }
       });
 
-      const candlestickSeries = chart.addCandlestickSeries({
+      const series = chart.addCandlestickSeries({
         upColor: '#10b981',
         downColor: '#ef4444',
         borderVisible: false,
         wickUpColor: '#10b981',
-        wickDownColor: '#ef4444',
+        wickDownColor: '#ef4444'
       });
 
       chartRef.current = chart;
-      candlestickSeriesRef.current = candlestickSeries;
+      candlestickSeriesRef.current = series;
 
       const handleResize = () => {
-        if (chartContainerRef.current && chartRef.current) {
-          chartRef.current.applyOptions({
-            width: chartContainerRef.current.clientWidth,
-          });
-        }
+        if (!chartContainerRef.current || !chartRef.current) return;
+        chartRef.current.applyOptions({
+          width: chartContainerRef.current.clientWidth
+        });
       };
 
       window.addEventListener('resize', handleResize);
 
-      return () => {
+      // store cleanup
+      chartRef.current.__cleanup = () => {
         window.removeEventListener('resize', handleResize);
-        if (chartRef.current) {
-          chartRef.current.remove();
-        }
+        try {
+          chart.remove();
+        } catch {}
       };
-    });
+    }
+
+    initChart();
+
+    return () => {
+      mounted = false;
+      const cleanup = chartRef.current?.__cleanup;
+      if (cleanup) cleanup();
+      chartRef.current = null;
+      candlestickSeriesRef.current = null;
+    };
   }, []);
 
   // UPDATE CHART DATA
@@ -216,14 +232,17 @@ const TossBox = () => {
     if (!candlestickSeriesRef.current) return;
 
     const allCandles = [...candleData];
-    if (currentCandle) {
-      allCandles.push(currentCandle);
-    }
+    if (currentCandle) allCandles.push(currentCandle);
 
     if (allCandles.length > 0) {
       candlestickSeriesRef.current.setData(allCandles);
-      if (chartRef.current) {
-        chartRef.current.timeScale().fitContent();
+
+      // Fit only once when we have a bit of data
+      if (!didFitOnceRef.current && chartRef.current && allCandles.length >= 2) {
+        didFitOnceRef.current = true;
+        try {
+          chartRef.current.timeScale().fitContent();
+        } catch {}
       }
     }
   }, [candleData, currentCandle]);
@@ -236,35 +255,37 @@ const TossBox = () => {
 
   useEffect(() => {
     if (publicKey) fetchUserBalance();
-  }, [publicKey, connection]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [publicKey]);
 
   useEffect(() => {
     if (gameState === 'active' && countdown > 0) {
-      const timer = setTimeout(() => setCountdown(c => c - 1), 1000);
+      const timer = setTimeout(() => setCountdown((c) => c - 1), 1000);
       return () => clearTimeout(timer);
     } else if (countdown === 0 && gameState === 'active') {
       endRound();
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gameState, countdown]);
 
   const fetchGameState = async () => {
     try {
       const res = await fetch('/api/get-game-state');
       const data = await res.json();
-      
+
       setTotalPot(data.totalPot || 0);
       setPlayerCount(data.playerCount || 0);
       setRecentWinners(data.recentWinners || []);
-      
+
       if (data.activeRound?.status === 'active') {
         const startTime = new Date(data.activeRound.start_time).getTime();
         const elapsed = Math.floor((Date.now() - startTime) / 1000);
         const remaining = Math.max(0, 60 - elapsed);
-        
+
         if (remaining > 0) {
           setCountdown(remaining);
           setGameState('active');
-          setStartPrice(parseFloat(data.activeRound.start_price));
+          setStartPrice(Number(data.activeRound.start_price));
         }
       }
     } catch (err) {
@@ -274,6 +295,7 @@ const TossBox = () => {
 
   const fetchUserBalance = async () => {
     try {
+      if (!publicKey) return;
       const bal = await connection.getBalance(publicKey);
       setBalance(bal / LAMPORTS_PER_SOL);
 
@@ -287,16 +309,18 @@ const TossBox = () => {
 
   const placeBet = async () => {
     if (!prediction || !publicKey || placingBet || currentPrice === 0) return;
-    
+
     setPlacingBet(true);
-    
+
     try {
+      // IMPORTANT: NEXT_PUBLIC_TREASURY_WALLET must exist at build-time for client usage
       const treasury = new PublicKey(process.env.NEXT_PUBLIC_TREASURY_WALLET);
+
       const tx = new Transaction().add(
         SystemProgram.transfer({
           fromPubkey: publicKey,
           toPubkey: treasury,
-          lamports: Math.floor(stake * LAMPORTS_PER_SOL),
+          lamports: Math.floor(stake * LAMPORTS_PER_SOL)
         })
       );
 
@@ -317,12 +341,12 @@ const TossBox = () => {
       });
 
       const result = await res.json();
-      
+
       if (result.success) {
         setGameState('active');
         setStartPrice(currentPrice);
         setCountdown(60);
-        setBalance(prev => prev - stake);
+        setBalance((prev) => prev - stake);
         await fetchGameState();
         alert('✅ Bet placed successfully!');
       } else {
@@ -330,7 +354,7 @@ const TossBox = () => {
       }
     } catch (err) {
       console.error('Bet error:', err);
-      alert('❌ Error: ' + err.message);
+      alert('❌ Error: ' + (err?.message || 'Unknown error'));
     } finally {
       setPlacingBet(false);
     }
@@ -353,7 +377,9 @@ const TossBox = () => {
       onClick={() => setMultiplier(value)}
       disabled={gameState === 'active'}
       className={`px-4 py-2 rounded-lg font-bold transition-all disabled:opacity-50 ${
-        multiplier === value ? 'bg-purple-600 text-white scale-105' : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+        multiplier === value
+          ? 'bg-purple-600 text-white scale-105'
+          : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
       }`}
     >
       {value}x
@@ -373,25 +399,36 @@ const TossBox = () => {
       <div className="max-w-6xl mx-auto mb-6">
         <div className="flex justify-between items-center">
           <div>
-            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">TossBox</h1>
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-purple-400 to-pink-400 bg-clip-text text-transparent">
+              TossBox
+            </h1>
             <p className="text-gray-400 text-sm">Predict. Win. Repeat.</p>
           </div>
-          
+
           <div className="flex items-center gap-4">
             {publicKey && (
               <div className="flex gap-2">
-                <Link href="/profile" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold">Profile</Link>
-                <Link href="/leaderboard" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold">Leaderboard</Link>
+                <Link href="/profile" className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold">
+                  Profile
+                </Link>
+                <Link
+                  href="/leaderboard"
+                  className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded-lg font-bold"
+                >
+                  Leaderboard
+                </Link>
               </div>
             )}
-            
+
             {!publicKey ? (
               <WalletMultiButton className="!bg-purple-600 hover:!bg-purple-700 !px-6 !py-3 !rounded-lg !font-bold" />
             ) : (
               <div className="text-right">
                 <div className="text-sm text-gray-400">Balance</div>
                 <div className="text-2xl font-bold">{balance.toFixed(3)} SOL</div>
-                <div className="text-xs text-gray-500">{publicKey.toString().slice(0, 4)}...{publicKey.toString().slice(-4)}</div>
+                <div className="text-xs text-gray-500">
+                  {publicKey.toString().slice(0, 4)}...{publicKey.toString().slice(-4)}
+                </div>
               </div>
             )}
           </div>
@@ -404,9 +441,9 @@ const TossBox = () => {
             <DollarSign size={16} />
             <span className="text-sm">Total Pot</span>
           </div>
-          <div className="text-2xl font-bold text-green-400">{totalPot.toFixed(2)} SOL</div>
+          <div className="text-2xl font-bold text-green-400">{Number(totalPot).toFixed(2)} SOL</div>
         </div>
-        
+
         <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
           <div className="flex items-center gap-2 text-gray-400 mb-1">
             <Users size={16} />
@@ -414,7 +451,7 @@ const TossBox = () => {
           </div>
           <div className="text-2xl font-bold text-blue-400">{playerCount}</div>
         </div>
-        
+
         <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
           <div className="flex items-center gap-2 text-gray-400 mb-1">
             <Trophy size={16} />
@@ -432,13 +469,10 @@ const TossBox = () => {
           <div className="bg-gray-800/50 rounded-lg p-4 border border-gray-700">
             <h3 className="text-sm font-bold text-gray-400 mb-3">Select Asset ({CRYPTOS.length} Available)</h3>
             <div className="grid grid-cols-6 gap-2 max-h-48 overflow-y-auto pr-2">
-              {CRYPTOS.map(c => (
+              {CRYPTOS.map((c) => (
                 <button
                   key={c.symbol}
-                  onClick={() => {
-                    console.log('🔄 Switching to', c.symbol);
-                    setSelectedCrypto(c.symbol);
-                  }}
+                  onClick={() => setSelectedCrypto(c.symbol)}
                   disabled={gameState === 'active'}
                   className={`py-2 px-1 rounded-lg font-bold text-xs transition-all disabled:opacity-50 ${
                     selectedCrypto === c.symbol
@@ -456,45 +490,42 @@ const TossBox = () => {
           <div className="bg-gray-800/50 rounded-lg border border-gray-700 overflow-hidden">
             <div className="p-4 border-b border-gray-700 flex justify-between items-center">
               <div>
-                <div className="text-4xl font-bold">
-                  ${formatPrice(currentPrice)}
-                </div>
+                <div className="text-4xl font-bold">${formatPrice(currentPrice)}</div>
                 <div className="text-sm text-gray-400 mt-1">{selectedCrypto}/USD</div>
               </div>
-              
+
               {gameState === 'active' && (
                 <div className="text-center bg-purple-900/30 px-6 py-3 rounded-lg border border-purple-700">
                   <div className="text-3xl font-bold text-purple-400">{countdown}</div>
                   <div className="text-xs text-gray-400">SECONDS LEFT</div>
                 </div>
               )}
-              
+
               {startPrice && currentPrice > 0 && gameState === 'active' && (
                 <div className={`text-right ${currentPrice >= startPrice ? 'text-green-400' : 'text-red-400'}`}>
                   <div className="text-3xl font-bold">
-                    {currentPrice >= startPrice ? '+' : ''}{((currentPrice - startPrice) / startPrice * 100).toFixed(2)}%
+                    {currentPrice >= startPrice ? '+' : ''}
+                    {(((currentPrice - startPrice) / startPrice) * 100).toFixed(2)}%
                   </div>
-                  <div className="text-sm text-gray-400">Your P&L</div>
+                  <div className="text-sm text-gray-400">Your P&amp;L</div>
                 </div>
               )}
             </div>
 
-            {/* CANDLESTICK CHART */}
+            {/* CANDLESTICK CHART (container always mounted) */}
             <div className="p-4">
-              {currentPrice > 0 ? (
-                <div 
-                  ref={chartContainerRef}
-                  className="w-full"
-                  style={{ height: '400px' }}
-                />
-              ) : (
-                <div className="h-[400px] flex items-center justify-center">
-                  <div className="text-center">
-                    <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
-                    <div className="text-gray-400">Loading {selectedCrypto} price data...</div>
+              <div className="relative w-full" style={{ height: '400px' }}>
+                <div ref={chartContainerRef} className="absolute inset-0 w-full h-full" />
+
+                {currentPrice <= 0 && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-gray-900/40">
+                    <div className="text-center">
+                      <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
+                      <div className="text-gray-200">Loading {selectedCrypto} price data...</div>
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
 
             {currentCandle && (
@@ -514,7 +545,11 @@ const TossBox = () => {
                   </div>
                   <div>
                     <div className="text-gray-500 text-xs mb-1">CLOSE</div>
-                    <div className={`font-bold ${currentCandle.close >= currentCandle.open ? 'text-green-400' : 'text-red-400'}`}>
+                    <div
+                      className={`font-bold ${
+                        currentCandle.close >= currentCandle.open ? 'text-green-400' : 'text-red-400'
+                      }`}
+                    >
                       ${formatPrice(currentCandle.close)}
                     </div>
                   </div>
@@ -525,7 +560,7 @@ const TossBox = () => {
 
           <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
             <h3 className="text-lg font-bold mb-4">Place Your Bet</h3>
-            
+
             {!publicKey ? (
               <div className="text-center py-8">
                 <p className="text-gray-400 mb-4">Connect your Solana wallet to start</p>
@@ -538,18 +573,22 @@ const TossBox = () => {
                     onClick={() => setPrediction('up')}
                     disabled={gameState === 'active'}
                     className={`py-6 rounded-lg font-bold text-xl transition-all ${
-                      prediction === 'up' ? 'bg-green-600 text-white scale-105' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      prediction === 'up'
+                        ? 'bg-green-600 text-white scale-105'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                     } disabled:opacity-50`}
                   >
                     <TrendingUp className="mx-auto mb-2" size={32} />
                     UP
                   </button>
-                  
+
                   <button
                     onClick={() => setPrediction('down')}
                     disabled={gameState === 'active'}
                     className={`py-6 rounded-lg font-bold text-xl transition-all ${
-                      prediction === 'down' ? 'bg-red-600 text-white scale-105' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+                      prediction === 'down'
+                        ? 'bg-red-600 text-white scale-105'
+                        : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
                     } disabled:opacity-50`}
                   >
                     <TrendingDown className="mx-auto mb-2" size={32} />
@@ -580,7 +619,8 @@ const TossBox = () => {
                     className="w-full bg-gray-700 border border-gray-600 rounded-lg px-4 py-3 text-white font-bold text-xl disabled:opacity-50"
                   />
                   <div className="text-sm text-gray-400 mt-2">
-                    Potential Win: <span className="text-green-400 font-bold">{(stake * multiplier * 0.95).toFixed(2)} SOL</span>
+                    Potential Win:{' '}
+                    <span className="text-green-400 font-bold">{(stake * multiplier * 0.95).toFixed(2)} SOL</span>
                   </div>
                 </div>
 
@@ -589,7 +629,13 @@ const TossBox = () => {
                   disabled={!prediction || gameState === 'active' || placingBet || stake > balance || currentPrice === 0}
                   className="w-full bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-700 hover:to-pink-700 py-4 rounded-lg font-bold text-xl transition-all disabled:opacity-50"
                 >
-                  {placingBet ? 'Placing Bet...' : gameState === 'active' ? 'Round In Progress' : currentPrice === 0 ? 'Loading Price...' : 'Place Bet'}
+                  {placingBet
+                    ? 'Placing Bet...'
+                    : gameState === 'active'
+                    ? 'Round In Progress'
+                    : currentPrice === 0
+                    ? 'Loading Price...'
+                    : 'Place Bet'}
                 </button>
               </>
             )}
@@ -605,9 +651,11 @@ const TossBox = () => {
             <div className="space-y-3">
               {recentWinners.slice(0, 10).map((w, i) => (
                 <div key={i} className="flex justify-between text-sm">
-                  <span className="text-gray-400 font-mono">{w.wallet_address.slice(0, 4)}...{w.wallet_address.slice(-4)}</span>
+                  <span className="text-gray-400 font-mono">
+                    {w.wallet_address?.slice(0, 4)}...{w.wallet_address?.slice(-4)}
+                  </span>
                   <div className="text-right">
-                    <div className="text-green-400 font-bold">+{parseFloat(w.actual_win).toFixed(2)} SOL</div>
+                    <div className="text-green-400 font-bold">+{Number(w.actual_win || 0).toFixed(2)} SOL</div>
                     <div className="text-xs text-gray-500">{w.multiplier}x</div>
                   </div>
                 </div>
@@ -645,7 +693,7 @@ const TossBox = () => {
               <li>7. Winners split the pot!</li>
             </ol>
             <div className="mt-4 p-3 bg-purple-900/30 rounded border border-purple-700 text-xs">
-              5% platform fee • Peer-to-peer betting • Live CoinGecko prices
+              5% platform fee • Peer-to-peer betting • Live Pyth prices
             </div>
           </div>
         </div>
