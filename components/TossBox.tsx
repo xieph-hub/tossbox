@@ -4,9 +4,8 @@ import React, { useEffect, useRef, useState } from "react";
 import { useWallet, useConnection } from "@solana/wallet-adapter-react";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
 import { Transaction, SystemProgram, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
-import { TrendingUp, TrendingDown, Trophy, Users, DollarSign, Flame, MessageCircle } from "lucide-react";
+import { TrendingUp, TrendingDown, Trophy, Users, DollarSign, Flame } from "lucide-react";
 import Link from "next/link";
-import { supabaseBrowser } from "@/lib/supabaseBrowser";
 
 // 32 CRYPTO ASSETS
 const CRYPTOS = [
@@ -44,16 +43,8 @@ const CRYPTOS = [
   { symbol: "PEPE", name: "Pepe" },
 ];
 
-type ChatMsg = {
-  id: string;
-  room: string;
-  wallet?: string;
-  text: string;
-  ts: number;
-};
-
 type Candle = {
-  time: number; // unix seconds, aligned to minute
+  time: number; // unix seconds aligned to minute
   open: number;
   high: number;
   low: number;
@@ -68,11 +59,12 @@ export default function TossBox() {
   const [prediction, setPrediction] = useState<"up" | "down" | null>(null);
   const [multiplier, setMultiplier] = useState(1);
   const [stake, setStake] = useState(0.1);
+
   const [gameState, setGameState] = useState<"waiting" | "active" | "ended">("waiting");
   const [countdown, setCountdown] = useState(60);
   const [startPrice, setStartPrice] = useState<number | null>(null);
-  const [currentPrice, setCurrentPrice] = useState(0);
 
+  const [currentPrice, setCurrentPrice] = useState(0);
   const [totalPot, setTotalPot] = useState(0);
   const [playerCount, setPlayerCount] = useState(0);
   const [balance, setBalance] = useState(0);
@@ -84,22 +76,62 @@ export default function TossBox() {
   const [candleData, setCandleData] = useState<Candle[]>([]);
   const [currentCandle, setCurrentCandle] = useState<Candle | null>(null);
 
+  // Chart refs
   const chartContainerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<any>(null);
   const candlestickSeriesRef = useRef<any>(null);
   const didFitOnceRef = useRef(false);
 
-  // Chat
-  const [chatInput, setChatInput] = useState("");
-  const [chatMsgs, setChatMsgs] = useState<ChatMsg[]>([]);
-  const chatRoom = `tossbox:${selectedCrypto}`;
-
   // -----------------------------
-  // REALTIME PRICES (SSE)
+  // PRICE FEED (polls your /api/get-price)
+  // Keep this if you haven't deployed SSE yet.
   // -----------------------------
   useEffect(() => {
     let active = true;
-    let es: EventSource | null = null;
+
+    async function fetchPrice() {
+      if (!active) return;
+
+      try {
+        const url = `/api/get-price?crypto=${encodeURIComponent(selectedCrypto)}&t=${Date.now()}`;
+        const res = await fetch(url, {
+          cache: "no-store",
+          headers: { "Cache-Control": "no-store" },
+        });
+
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+        const price = Number(data?.price);
+
+        if (!Number.isFinite(price) || price <= 0) throw new Error("Invalid price");
+
+        if (!active) return;
+
+        setCurrentPrice(price);
+
+        const nowSec = Math.floor(Date.now() / 1000);
+        const candleTime = Math.floor(nowSec / 60) * 60;
+
+        setCurrentCandle((prev) => {
+          if (!prev || prev.time !== candleTime) {
+            if (prev) {
+              setCandleData((prevData) => [...prevData, prev].slice(-200));
+            }
+            return { time: candleTime, open: price, high: price, low: price, close: price };
+          }
+
+          return {
+            ...prev,
+            close: price,
+            high: Math.max(prev.high, price),
+            low: Math.min(prev.low, price),
+          };
+        });
+      } catch (err: any) {
+        console.error("❌ Price error:", err?.message || err);
+      }
+    }
 
     // reset when switching asset
     setCandleData([]);
@@ -107,61 +139,17 @@ export default function TossBox() {
     setCurrentPrice(0);
     didFitOnceRef.current = false;
 
-    const pushTick = (price: number) => {
-      if (!active) return;
-
-      setCurrentPrice(price);
-
-      const nowSec = Math.floor(Date.now() / 1000);
-      const candleTime = Math.floor(nowSec / 60) * 60;
-
-      setCurrentCandle((prev) => {
-        if (!prev || prev.time !== candleTime) {
-          if (prev) {
-            setCandleData((prevData) => [...prevData, prev].slice(-200));
-          }
-          return { time: candleTime, open: price, high: price, low: price, close: price };
-        }
-
-        return {
-          ...prev,
-          close: price,
-          high: Math.max(prev.high, price),
-          low: Math.min(prev.low, price),
-        };
-      });
-    };
-
-    es = new EventSource(`/api/price-stream?crypto=${encodeURIComponent(selectedCrypto)}`);
-
-    es.onmessage = (event) => {
-      try {
-        const payload = JSON.parse(event.data);
-        const parsed = payload?.parsed?.[0];
-
-        const n = Number(parsed?.price?.price);
-        const e = Number(parsed?.price?.expo);
-        if (!Number.isFinite(n) || !Number.isFinite(e)) return;
-
-        const price = n * Math.pow(10, e);
-        if (!Number.isFinite(price) || price <= 0) return;
-
-        pushTick(price);
-      } catch {
-        // ignore
-      }
-    };
+    fetchPrice();
+    const interval = setInterval(fetchPrice, 1000);
 
     return () => {
       active = false;
-      try {
-        es?.close();
-      } catch {}
+      clearInterval(interval);
     };
   }, [selectedCrypto]);
 
   // -----------------------------
-  // INIT CHART
+  // INIT CHART (mount once)
   // -----------------------------
   useEffect(() => {
     let mounted = true;
@@ -183,23 +171,10 @@ export default function TossBox() {
       const chart = createChart(chartContainerRef.current, {
         width: chartContainerRef.current.clientWidth || 600,
         height: 400,
-        layout: {
-          background: { color: "transparent" },
-          textColor: "#9CA3AF",
-        },
-        grid: {
-          vertLines: { color: "#1f2937" },
-          horzLines: { color: "#1f2937" },
-        },
-        timeScale: {
-          timeVisible: true,
-          secondsVisible: false,
-          borderColor: "#374151",
-        },
-        rightPriceScale: {
-          borderColor: "#374151",
-          scaleMargins: { top: 0.1, bottom: 0.1 },
-        },
+        layout: { background: { color: "transparent" }, textColor: "#9CA3AF" },
+        grid: { vertLines: { color: "#1f2937" }, horzLines: { color: "#1f2937" } },
+        timeScale: { timeVisible: true, secondsVisible: false, borderColor: "#374151" },
+        rightPriceScale: { borderColor: "#374151", scaleMargins: { top: 0.1, bottom: 0.1 } },
       });
 
       const series = chart.addCandlestickSeries({
@@ -245,13 +220,13 @@ export default function TossBox() {
   useEffect(() => {
     if (!candlestickSeriesRef.current) return;
 
-    const all = [...candleData];
-    if (currentCandle) all.push(currentCandle);
+    const allCandles = [...candleData];
+    if (currentCandle) allCandles.push(currentCandle);
 
-    if (all.length > 0) {
-      candlestickSeriesRef.current.setData(all);
+    if (allCandles.length > 0) {
+      candlestickSeriesRef.current.setData(allCandles);
 
-      if (!didFitOnceRef.current && chartRef.current && all.length >= 2) {
+      if (!didFitOnceRef.current && chartRef.current && allCandles.length >= 2) {
         didFitOnceRef.current = true;
         try {
           chartRef.current.timeScale().fitContent();
@@ -261,7 +236,7 @@ export default function TossBox() {
   }, [candleData, currentCandle]);
 
   // -----------------------------
-  // GAME STATE POLL (unchanged)
+  // GAME STATE POLL
   // -----------------------------
   useEffect(() => {
     fetchGameState();
@@ -324,48 +299,7 @@ export default function TossBox() {
   }
 
   // -----------------------------
-  // CHAT (Supabase realtime)
-  // -----------------------------
-  useEffect(() => {
-    setChatMsgs([]);
-
-    const channel = supabaseBrowser.channel(chatRoom);
-
-    channel
-      .on("broadcast", { event: "message" }, (payload) => {
-        const msg = payload?.payload as ChatMsg | undefined;
-        if (!msg?.id) return;
-        setChatMsgs((prev) => [...prev, msg].slice(-120));
-      })
-      .subscribe();
-
-    return () => {
-      supabaseBrowser.removeChannel(channel);
-    };
-  }, [chatRoom]);
-
-  async function sendChat() {
-    const text = chatInput.trim();
-    if (!text) return;
-
-    const msg: ChatMsg = {
-      id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      room: chatRoom,
-      wallet: publicKey?.toString(),
-      text,
-      ts: Date.now(),
-    };
-
-    setChatInput("");
-
-    // Important: send via the SAME channel name; easiest is create channel and send
-    const channel = supabaseBrowser.channel(chatRoom);
-    await channel.send({ type: "broadcast", event: "message", payload: msg });
-    supabaseBrowser.removeChannel(channel);
-  }
-
-  // -----------------------------
-  // BET
+  // BET (robust confirm)
   // -----------------------------
   async function placeBet() {
     if (!prediction || !publicKey || placingBet || currentPrice === 0) return;
@@ -373,7 +307,10 @@ export default function TossBox() {
     setPlacingBet(true);
 
     try {
-      const treasury = new PublicKey(process.env.NEXT_PUBLIC_TREASURY_WALLET!);
+      const treasuryStr = process.env.NEXT_PUBLIC_TREASURY_WALLET;
+      if (!treasuryStr) throw new Error("Missing NEXT_PUBLIC_TREASURY_WALLET");
+
+      const treasury = new PublicKey(treasuryStr);
 
       const tx = new Transaction().add(
         SystemProgram.transfer({
@@ -383,9 +320,71 @@ export default function TossBox() {
         })
       );
 
-      const sig = await sendTransaction(tx, connection);
-      await connection.confirmTransaction(sig, "confirmed");
+      // Always attach a fresh blockhash
+      const latest = await connection.getLatestBlockhash("finalized");
+      tx.feePayer = publicKey;
+      tx.recentBlockhash = latest.blockhash;
 
+      // Send
+      const sig = await sendTransaction(tx, connection, {
+        skipPreflight: false,
+        preflightCommitment: "processed",
+        maxRetries: 3,
+      });
+
+      // Confirm with blockhash strategy (more reliable than the simple overload)
+      const started = Date.now();
+      const TIMEOUT_MS = 120_000;
+
+      let confirmed = false;
+      let lastErr: any = null;
+
+      while (Date.now() - started < TIMEOUT_MS) {
+        try {
+          const res = await connection.confirmTransaction(
+            {
+              signature: sig,
+              blockhash: latest.blockhash,
+              lastValidBlockHeight: latest.lastValidBlockHeight,
+            },
+            "confirmed"
+          );
+
+          if (res?.value?.err) {
+            lastErr = res.value.err;
+            break;
+          }
+
+          confirmed = true;
+          break;
+        } catch (e: any) {
+          lastErr = e;
+        }
+
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+
+      // One more sanity check via signature status
+      if (!confirmed) {
+        const st = await connection.getSignatureStatuses([sig], { searchTransactionHistory: true });
+        const s0 = st?.value?.[0];
+
+        if (s0?.confirmationStatus === "confirmed" || s0?.confirmationStatus === "finalized") {
+          confirmed = true;
+        } else if (s0?.err) {
+          throw new Error(`Transaction failed: ${JSON.stringify(s0.err)}`);
+        }
+      }
+
+      if (!confirmed) {
+        throw new Error(
+          `Transaction not confirmed within ${Math.floor(TIMEOUT_MS / 1000)}s. Signature: ${sig}\nLast error: ${
+            typeof lastErr === "string" ? lastErr : lastErr?.message || JSON.stringify(lastErr)
+          }`
+        );
+      }
+
+      // Only after confirmed: record bet in DB
       const res = await fetch("/api/place-bet", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -401,19 +400,20 @@ export default function TossBox() {
 
       const result = await res.json();
 
-      if (result.success) {
-        setGameState("active");
-        setStartPrice(currentPrice);
-        setCountdown(60);
-        setBalance((prev) => prev - stake);
-        await fetchGameState();
-        alert("✅ Bet placed successfully!");
-      } else {
-        alert("❌ Failed: " + (result.error || "Unknown error"));
+      if (!result.success) {
+        throw new Error(result.error || "Backend rejected bet");
       }
+
+      setGameState("active");
+      setStartPrice(currentPrice);
+      setCountdown(60);
+      setBalance((prev) => prev - stake);
+      await fetchGameState();
+
+      alert("✅ Bet placed successfully!");
     } catch (err: any) {
       console.error("Bet error:", err);
-      alert("❌ Error: " + (err?.message || "Unknown error"));
+      alert(`❌ ${err?.message || "Unknown error"}\n\nIf you have a signature, check Solana Explorer.`);
     } finally {
       setPlacingBet(false);
     }
@@ -574,7 +574,7 @@ export default function TossBox() {
                   <div className="absolute inset-0 flex items-center justify-center bg-gray-900/40">
                     <div className="text-center">
                       <div className="animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-purple-500 mx-auto mb-3"></div>
-                      <div className="text-gray-200">Loading {selectedCrypto} price stream...</div>
+                      <div className="text-gray-200">Loading {selectedCrypto} price data...</div>
                     </div>
                   </div>
                 )}
@@ -681,51 +681,6 @@ export default function TossBox() {
         </div>
 
         <div className="space-y-4">
-          {/* CHAT */}
-          <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
-            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-              <MessageCircle size={18} className="text-purple-300" />
-              Live Chat ({selectedCrypto})
-            </h3>
-
-            <div className="h-64 overflow-y-auto rounded-lg bg-gray-900/40 border border-gray-700 p-3 space-y-3">
-              {chatMsgs.length === 0 ? (
-                <div className="text-gray-500 text-sm">Be the first to chat in this room…</div>
-              ) : (
-                chatMsgs.map((m) => (
-                  <div key={m.id} className="text-sm">
-                    <div className="text-gray-500 text-xs mb-1">
-                      {m.wallet ? `${m.wallet.slice(0, 4)}...${m.wallet.slice(-4)}` : "anon"} •{" "}
-                      {new Date(m.ts).toLocaleTimeString()}
-                    </div>
-                    <div className="text-gray-200 break-words">{m.text}</div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div className="mt-3 flex gap-2">
-              <input
-                value={chatInput}
-                onChange={(e) => setChatInput(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") sendChat();
-                }}
-                placeholder={publicKey ? "Type a message…" : "Connect wallet to chat…"}
-                disabled={!publicKey}
-                className="flex-1 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white text-sm disabled:opacity-50"
-              />
-              <button
-                onClick={sendChat}
-                disabled={!publicKey || !chatInput.trim()}
-                className="bg-purple-600 hover:bg-purple-700 px-4 py-2 rounded-lg font-bold text-sm disabled:opacity-50"
-              >
-                Send
-              </button>
-            </div>
-          </div>
-
-          {/* WINNERS */}
           <div className="bg-gray-800/50 rounded-lg p-6 border border-gray-700">
             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
               <Trophy size={20} className="text-yellow-400" />
@@ -751,8 +706,8 @@ export default function TossBox() {
             <h3 className="text-lg font-bold mb-4">📊 Live Candlesticks</h3>
             <ul className="space-y-3 text-sm text-gray-300">
               <li className="text-gray-400">• Each candle = 1 minute</li>
-              <li className="text-gray-400">• Updates live (streamed)</li>
-              <li className="text-gray-400">• {CRYPTOS.length} assets</li>
+              <li className="text-gray-400">• Updates every second</li>
+              <li className="text-gray-400">• {CRYPTOS.length} assets to trade</li>
             </ul>
           </div>
 
@@ -760,15 +715,15 @@ export default function TossBox() {
             <h3 className="text-lg font-bold mb-4">How It Works</h3>
             <ol className="space-y-2 text-sm text-gray-300">
               <li>1. Connect Solana wallet</li>
-              <li>2. Pick an asset</li>
+              <li>2. Pick from {CRYPTOS.length} assets</li>
               <li>3. Predict UP or DOWN</li>
               <li>4. Choose multiplier (1x-10x)</li>
-              <li>5. Set stake</li>
+              <li>5. Set your stake</li>
               <li>6. Wait 60 seconds</li>
-              <li>7. Winners split the pot</li>
+              <li>7. Winners split the pot!</li>
             </ol>
             <div className="mt-4 p-3 bg-purple-900/30 rounded border border-purple-700 text-xs">
-              5% platform fee • Peer-to-peer betting • Live Pyth stream
+              5% platform fee • Peer-to-peer betting • Live Pyth prices
             </div>
           </div>
         </div>
